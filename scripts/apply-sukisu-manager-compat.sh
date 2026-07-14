@@ -45,6 +45,96 @@ fi
 
 KSU_DIR="$(cd "$KSU_DIR" && pwd)"
 
+ensure_susfs_kconfig() {
+    local kconfig="$KSU_DIR/kernel/Kconfig"
+    local symbol
+
+    [[ -f "$kconfig" ]] || die "missing $kconfig"
+
+    if grep -qE '^[[:space:]]*config[[:space:]]+KSU_SUSFS[[:space:]]*$' "$kconfig"; then
+        echo "SUSFS Kconfig symbols are already present."
+        return 0
+    fi
+
+    cat >> "$kconfig" <<'KCONFIG_SUSFS'
+
+menu "KernelSU - SUSFS"
+    depends on KSU
+
+config KSU_SUSFS
+    bool "Enable SUSFS support"
+    default y
+    help
+      Build the SUSFS implementation already integrated in this kernel tree.
+
+config KSU_SUSFS_SUS_PATH
+    bool "Enable suspicious-path hiding"
+    depends on KSU_SUSFS
+    default y
+
+config KSU_SUSFS_SUS_MOUNT
+    bool "Enable suspicious-mount hiding"
+    depends on KSU_SUSFS
+    default y
+
+config KSU_SUSFS_SUS_KSTAT
+    bool "Enable suspicious-kstat spoofing"
+    depends on KSU_SUSFS
+    default y
+
+config KSU_SUSFS_SPOOF_UNAME
+    bool "Enable uname spoofing"
+    depends on KSU_SUSFS
+    default y
+
+config KSU_SUSFS_ENABLE_LOG
+    bool "Enable SUSFS kernel logging"
+    depends on KSU_SUSFS
+    default n
+
+config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+    bool "Hide KSU and SUSFS symbols from kallsyms"
+    depends on KSU_SUSFS
+    default n
+
+config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+    bool "Enable cmdline or bootconfig spoofing"
+    depends on KSU_SUSFS
+    default y
+
+config KSU_SUSFS_OPEN_REDIRECT
+    bool "Enable open redirect"
+    depends on KSU_SUSFS
+    default n
+
+config KSU_SUSFS_SUS_MAP
+    bool "Enable hiding selected mapped files"
+    depends on KSU_SUSFS
+    default y
+
+endmenu
+KCONFIG_SUSFS
+
+    for symbol in \
+        KSU_SUSFS \
+        KSU_SUSFS_SUS_PATH \
+        KSU_SUSFS_SUS_MOUNT \
+        KSU_SUSFS_SUS_KSTAT \
+        KSU_SUSFS_SPOOF_UNAME \
+        KSU_SUSFS_ENABLE_LOG \
+        KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+        KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+        KSU_SUSFS_OPEN_REDIRECT \
+        KSU_SUSFS_SUS_MAP; do
+        grep -qE "^[[:space:]]*config[[:space:]]+${symbol}[[:space:]]*$" "$kconfig" ||
+            die "failed to inject Kconfig symbol: $symbol"
+    done
+
+    echo "Injected missing SUSFS Kconfig symbols into: $kconfig"
+}
+
+ensure_susfs_kconfig
+
 ALLOWLIST="$KSU_DIR/kernel/policy/allowlist.c"
 DISPATCH="$KSU_DIR/kernel/supercall/dispatch.c"
 
@@ -165,7 +255,6 @@ def replace_function(text: str, name: str, replacement: str) -> str:
     start, end = function_bounds(text, name)
     return text[:start] + replacement.rstrip() + text[end:]
 
-# 1. Migrate incoming manager profiles before profile_valid() rejects v2/v3.
 allow = read(allow_path)
 
 declaration = "static void migrate_profile(u32 version, struct app_profile *profile);"
@@ -217,7 +306,6 @@ if "migrated incoming app profile" not in allow:
 
 write(allow_path, allow)
 
-# 2. Copy the userspace structure size matching the requested ABI.
 dispatch = read(dispatch_path)
 
 helper = r"""
@@ -378,7 +466,6 @@ dispatch = replace_function(dispatch, "do_get_app_profile", get_function)
 dispatch = replace_function(dispatch, "do_set_app_profile", set_function)
 write(dispatch_path, dispatch)
 
-# 3. Initial manager scan. Supports boot_event.c and the older ksud.c layout.
 boot = read(boot_path)
 
 if "Initial packages.list scan for an already-installed manager" not in boot:
