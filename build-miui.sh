@@ -111,7 +111,7 @@ echo "TARGET_DEVICE: $TARGET_DEVICE"
 
 if [ $SUKISU_ENABLE -eq 1 ]; then
     echo "SuKiSU is enabled"
-    curl -LSs "https://raw.githubusercontent.com/SuKiSU-Ultra/SuKiSU-next/main/kernel/setup.sh" | bash
+    curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
 else
     echo "SuKiSU is disabled"
 fi
@@ -197,22 +197,22 @@ make $MAKE_ARGS ${TARGET_DEVICE}_defconfig
 
 if [ $SUKISU_ENABLE -eq 1 ]; then
     scripts/config --file out/.config \
-    -e SUKISU \
+    -e KSU \
     -e THREAD_INFO_IN_TASK \
-    -e SUKISU_SUSFS \
-    -e SUKISU_SUSFS_SUS_PATH \
-    -e SUKISU_SUSFS_SUS_MOUNT \
-    -e SUKISU_SUSFS_SUS_KSTAT \
-    -e SUKISU_SUSFS_SPOOF_UNAME \
-    -e SUKISU_SUSFS_ENABLE_LOG \
-    -e SUKISU_SUSFS_HIDE_SUKISU_SUSFS_SYMBOLS \
-    -e SUKISU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-    -e SUKISU_SUSFS_OPEN_REDIRECT \
-    -e SUKISU_SUSFS_SUS_MAP \
-    -e SUKISU_MULTI_MANAGER_SUPPORT \
-    -e SUKISU_KPM
+    -e KSU_SUSFS \
+    -e KSU_SUSFS_SUS_PATH \
+    -e KSU_SUSFS_SUS_MOUNT \
+    -e KSU_SUSFS_SUS_KSTAT \
+    -e KSU_SUSFS_SPOOF_UNAME \
+    -e KSU_SUSFS_ENABLE_LOG \
+    -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+    -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+    -e KSU_SUSFS_OPEN_REDIRECT \
+    -e KSU_SUSFS_SUS_MAP \
+    -e KSU_MULTI_MANAGER_SUPPORT \
+    -e KPM
 else
-    scripts/config --file out/.config -d SUKISU
+    scripts/config --file out/.config -d KSU
 fi
 
 scripts/config --file out/.config \
