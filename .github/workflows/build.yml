@@ -102,6 +102,10 @@ jobs:
           echo "Effective dependency requests in $DEFCONFIG:"
           grep -E '^CONFIG_(KPROBES|EXT4_FS)=' "$DEFCONFIG"
 
+          echo "Applying Linux 4.19 module namespace compatibility..."
+          export KCFLAGS='-DMODULE_IMPORT_NS\(x\)='
+          echo "KCFLAGS: $KCFLAGS"
+
           echo "Building with KernelSU..."
           bash ${{ inputs.script }} ${{ inputs.device }} ksu
         else
