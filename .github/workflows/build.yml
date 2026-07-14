@@ -81,10 +81,27 @@ jobs:
     - name: Build Kernel
       run: |
         chmod +x build.sh build-miui.sh
-        
+
         echo "Using script: ${{ inputs.script }}"
 
         if [ "${{ inputs.ksu }}" == "true" ]; then
+          echo "Preparing required SukiSU Kconfig dependencies..."
+
+          DEFCONFIG="arch/arm64/configs/${{ inputs.device }}_defconfig"
+          test -f "$DEFCONFIG"
+
+          sed -i \
+            -e '/^CONFIG_KPROBES=/d' \
+            -e '/^# CONFIG_KPROBES is not set$/d' \
+            -e '/^CONFIG_EXT4_FS=/d' \
+            -e '/^# CONFIG_EXT4_FS is not set$/d' \
+            "$DEFCONFIG"
+
+          printf '\nCONFIG_KPROBES=y\nCONFIG_EXT4_FS=y\n' >> "$DEFCONFIG"
+
+          echo "Effective dependency requests in $DEFCONFIG:"
+          grep -E '^CONFIG_(KPROBES|EXT4_FS)=' "$DEFCONFIG"
+
           echo "Building with KernelSU..."
           bash ${{ inputs.script }} ${{ inputs.device }} ksu
         else
