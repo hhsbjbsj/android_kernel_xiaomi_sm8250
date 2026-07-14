@@ -412,7 +412,35 @@ scripts/config --file out/.config \
     -d REKERNEL \
     -d REKERNEL_NETWORK
 
+# Resolve Kconfig dependencies before compiling. scripts/config only requests
+# values; olddefconfig writes the effective final values to out/.config.
+echo "Resolving final kernel configuration..."
+make $MAKE_ARGS olddefconfig
+
+if [ "$KSU_ENABLE" -eq 1 ]; then
+    echo "========== Effective SukiSU / SUSFS config =========="
+    grep -E '^CONFIG_KSU(=|_)' out/.config | sort || true
+    echo "======================================================"
+
+    for required_option in CONFIG_KSU CONFIG_KSU_SUSFS; do
+        if ! grep -qx "${required_option}=y" out/.config; then
+            echo "Error: ${required_option}=y is missing from the effective kernel config."
+            echo "The kernel would compile without working SukiSU/SUSFS support."
+            exit 1
+        fi
+    done
+fi
+
 make $MAKE_ARGS -j$(nproc)
+
+if [ "$KSU_ENABLE" -eq 1 ]; then
+    if ! find out -type f -path '*/fs/susfs.o' -size +0c -print -quit | grep -q .; then
+        echo "Error: fs/susfs.o was not built although CONFIG_KSU_SUSFS=y was requested."
+        exit 1
+    fi
+
+    echo "Verified: SukiSU and SUSFS are compiled into this kernel build."
+fi
 
 if [ -f "out/arch/arm64/boot/Image" ]; then
     echo "The file [out/arch/arm64/boot/Image] exists. MIUI Build successfully."
