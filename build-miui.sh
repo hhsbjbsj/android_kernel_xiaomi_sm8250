@@ -97,8 +97,193 @@ echo "[clang --version]:"
 clang --version
 
 
+# ==============================================================================
+#                       SukiSU-Ultra Integration Block
+# ==============================================================================
 
-KSU_ZIP_STR="NoKernelSU" if [ "${2:-}" = "ksu" ]; then KSU_ENABLE=1 KSU_ZIP_STR="ReSukiSU-SuSFS" else KSU_ENABLE=0 fi echo "TARGET_DEVICE: $TARGET_DEVICE" if [ "$KSU_ENABLE" -eq 1 ]; then echo echo "================================================================" echo " Setting up SukiSU-Ultra" echo "================================================================" SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)" KSU_DIR="$SCRIPT_DIR/KernelSU" COMPAT_SCRIPT="$SCRIPT_DIR/scripts/apply-sukisu-manager-compat.sh" echo "Kernel source root: $SCRIPT_DIR" echo "KernelSU source: $KSU_DIR" # -------------------------------------------------------------------------- # 1. 集成 SukiSU-Ultra # -------------------------------------------------------------------------- echo echo "[1/5] Downloading and integrating SukiSU-Ultra..." curl -fLSs \ "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s -- main if [ ! -d "$KSU_DIR" ]; then echo "Error: KernelSU source directory was not created." echo "Expected directory:" echo " $KSU_DIR" exit 1 fi if [ ! -d "$KSU_DIR/.git" ]; then echo "Error: KernelSU is not a valid Git repository:" echo " $KSU_DIR" exit 1 fi # -------------------------------------------------------------------------- # 2. 检查当前 SukiSU 源码 # -------------------------------------------------------------------------- echo echo "[2/5] Checking SukiSU source layout..." echo echo "---------------- KernelSU commit ----------------" git -C "$KSU_DIR" log -1 \ --format='Commit: %H%nDate: %cd%nTitle: %s' \ --date=iso || true echo echo "---------------- Runtime source -----------------" find "$KSU_DIR/kernel/runtime" \ -maxdepth 1 \ -type f \ \( \ -name "boot_event.c" -o \ -name "ksud.c" \ \) \ -print 2>/dev/null || true echo echo "---------------- Required files -----------------" for file in \ "$KSU_DIR/kernel/policy/allowlist.c" \ "$KSU_DIR/kernel/supercall/dispatch.c"; do if [ ! -f "$file" ]; then echo "Error: Required SukiSU source file is missing:" echo " $file" exit 1 fi echo "$file" done echo echo "---------------- Profile version ----------------" grep -Rns \ "KSU_APP_PROFILE_VER" \ "$KSU_DIR" \ 2>/dev/null | head -n 20 || true echo "--------------------------------------------------" # -------------------------------------------------------------------------- # 3. 检查本地兼容脚本 # -------------------------------------------------------------------------- echo echo "[3/5] Preparing SukiSU Manager compatibility script..." if [ ! -f "$COMPAT_SCRIPT" ]; then echo "Error: Manager compatibility script was not found." echo echo "Expected file:" echo " $COMPAT_SCRIPT" echo echo "Please place the script at:" echo " scripts/apply-sukisu-manager-compat.sh" exit 1 fi # 清除 Windows CRLF 换行 sed -i 's/\r$//' "$COMPAT_SCRIPT" chmod +x "$COMPAT_SCRIPT" echo "Compatibility script:" echo " $COMPAT_SCRIPT" echo echo "Compatibility script SHA256:" sha256sum "$COMPAT_SCRIPT" # 新版脚本必须支持 boot_event.c if ! grep -q \ 'kernel/runtime/boot_event.c' \ "$COMPAT_SCRIPT"; then echo echo "Error: An old compatibility script was detected." echo "The script does not support:" echo " kernel/runtime/boot_event.c" exit 1 fi # 拦截旧版写死 ksud.c 的脚本 if grep -q \ 'unsupported source layout: kernel/runtime/ksud.c is missing' \ "$COMPAT_SCRIPT"; then echo echo "Error: Obsolete compatibility script detected." echo "This version only supports kernel/runtime/ksud.c." exit 1 fi # -------------------------------------------------------------------------- # 4. 应用 Manager Compat # -------------------------------------------------------------------------- echo echo "[4/5] Applying SukiSU Manager Compat v2..." bash "$COMPAT_SCRIPT" "$KSU_DIR" echo echo "Manager compatibility script completed." # -------------------------------------------------------------------------- # 5. 验证应用结果 # -------------------------------------------------------------------------- echo echo "[5/5] Verifying compatibility changes..." git -C "$KSU_DIR" diff --check echo echo "Changed SukiSU files:" git -C "$KSU_DIR" diff --name-only -- \ kernel/policy/allowlist.c \ kernel/supercall/dispatch.c \ kernel/runtime/boot_event.c \ kernel/runtime/ksud.c \ kernel/core/init.c 2>/dev/null || true echo echo "Compatibility markers:" grep -Rns \ -e "KSU_APP_PROFILE_SIZE_V2_V3" \ -e "migrated incoming app profile" \ -e "Initial packages.list scan for an already-installed manager" \ "$KSU_DIR/kernel" \ 2>/dev/null || true echo echo "================================================================" echo " SukiSU Manager Compat applied successfully" echo "================================================================" echo else echo "KSU is disabled" fi
+KSU_ZIP_STR="NoKernelSU"
+
+if [ "${2:-}" = "ksu" ]; then
+    KSU_ENABLE=1
+    KSU_ZIP_STR="ReSukiSU-SuSFS"
+else
+    KSU_ENABLE=0
+fi
+
+echo "TARGET_DEVICE: $TARGET_DEVICE"
+
+if [ "$KSU_ENABLE" -eq 1 ]; then
+    echo
+    echo "================================================================"
+    echo "                 Setting up SukiSU-Ultra"
+    echo "================================================================"
+
+    SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+    KSU_DIR="$SCRIPT_DIR/KernelSU"
+    COMPAT_SCRIPT="$SCRIPT_DIR/scripts/apply-sukisu-manager-compat.sh"
+
+    echo "Kernel source root: $SCRIPT_DIR"
+    echo "KernelSU source:    $KSU_DIR"
+
+    echo
+    echo "[1/5] Downloading and integrating SukiSU-Ultra..."
+
+    curl -fLSs \
+        "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" |
+        bash -s -- main
+
+    if [ ! -d "$KSU_DIR" ]; then
+        echo "Error: KernelSU source directory was not created."
+        echo "Expected directory:"
+        echo "  $KSU_DIR"
+        exit 1
+    fi
+
+    if [ ! -d "$KSU_DIR/.git" ]; then
+        echo "Error: KernelSU is not a valid Git repository:"
+        echo "  $KSU_DIR"
+        exit 1
+    fi
+
+    echo
+    echo "[2/5] Checking SukiSU source layout..."
+
+    echo
+    echo "---------------- KernelSU commit ----------------"
+
+    git -C "$KSU_DIR" log -1 \
+        --format='Commit: %H%nDate:   %cd%nTitle:  %s' \
+        --date=iso || true
+
+    echo
+    echo "---------------- Runtime source -----------------"
+
+    find "$KSU_DIR/kernel/runtime" \
+        -maxdepth 1 \
+        -type f \
+        \( \
+            -name "boot_event.c" -o \
+            -name "ksud.c" \
+        \) \
+        -print 2>/dev/null || true
+
+    echo
+    echo "---------------- Required files -----------------"
+
+    for file in \
+        "$KSU_DIR/kernel/policy/allowlist.c" \
+        "$KSU_DIR/kernel/supercall/dispatch.c"; do
+
+        if [ ! -f "$file" ]; then
+            echo "Error: Required SukiSU source file is missing:"
+            echo "  $file"
+            exit 1
+        fi
+
+        echo "$file"
+    done
+
+    echo
+    echo "---------------- Profile version ----------------"
+
+    grep -Rns \
+        "KSU_APP_PROFILE_VER" \
+        "$KSU_DIR" \
+        2>/dev/null |
+        head -n 20 || true
+
+    echo "--------------------------------------------------"
+
+    echo
+    echo "[3/5] Preparing SukiSU Manager compatibility script..."
+
+    if [ ! -f "$COMPAT_SCRIPT" ]; then
+        echo "Error: Manager compatibility script was not found."
+        echo
+        echo "Expected file:"
+        echo "  $COMPAT_SCRIPT"
+        echo
+        echo "Please place the script at:"
+        echo "  scripts/apply-sukisu-manager-compat.sh"
+        exit 1
+    fi
+
+    sed -i 's/\r$//' "$COMPAT_SCRIPT"
+    chmod +x "$COMPAT_SCRIPT"
+
+    echo "Compatibility script:"
+    echo "  $COMPAT_SCRIPT"
+
+    echo
+    echo "Compatibility script SHA256:"
+    sha256sum "$COMPAT_SCRIPT"
+
+    if ! grep -q \
+        'kernel/runtime/boot_event.c' \
+        "$COMPAT_SCRIPT"; then
+
+        echo
+        echo "Error: An old compatibility script was detected."
+        echo "The script does not support:"
+        echo "  kernel/runtime/boot_event.c"
+        exit 1
+    fi
+
+    if grep -q \
+        'unsupported source layout: kernel/runtime/ksud.c is missing' \
+        "$COMPAT_SCRIPT"; then
+
+        echo
+        echo "Error: Obsolete compatibility script detected."
+        echo "This version only supports kernel/runtime/ksud.c."
+        exit 1
+    fi
+
+    echo
+    echo "[4/5] Applying SukiSU Manager Compat v2..."
+
+    bash "$COMPAT_SCRIPT" "$KSU_DIR"
+
+    echo
+    echo "Manager compatibility script completed."
+
+    echo
+    echo "[5/5] Verifying compatibility changes..."
+
+    git -C "$KSU_DIR" diff --check
+
+    echo
+    echo "Changed SukiSU files:"
+
+    git -C "$KSU_DIR" diff --name-only -- \
+        kernel/policy/allowlist.c \
+        kernel/supercall/dispatch.c \
+        kernel/runtime/boot_event.c \
+        kernel/runtime/ksud.c \
+        kernel/core/init.c 2>/dev/null || true
+
+    echo
+    echo "Compatibility markers:"
+
+    grep -Rns \
+        -e "KSU_APP_PROFILE_SIZE_V2_V3" \
+        -e "migrated incoming app profile" \
+        -e "Initial packages.list scan for an already-installed manager" \
+        "$KSU_DIR/kernel" \
+        2>/dev/null || true
+
+    echo
+    echo "================================================================"
+    echo "        SukiSU Manager Compat applied successfully"
+    echo "================================================================"
+    echo
+else
+    echo "KSU is disabled"
+fi
+
+# ==============================================================================
+#                     End of SukiSU-Ultra Integration
+# ==============================================================================
 
 echo "Integrating Baseband-guard..."
 curl -LSs "https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh" | bash
