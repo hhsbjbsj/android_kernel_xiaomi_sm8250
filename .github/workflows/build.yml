@@ -103,11 +103,10 @@ jobs:
           echo "Effective dependency requests in $DEFCONFIG:"
           grep -E '^CONFIG_(KPROBES|EXT4_FS)=' "$DEFCONFIG"
 
-          echo "Applying Linux 4.19 SukiSU API compatibility..."
-          # Linux 4.19 uses task_work_add(..., bool notify), has no TWA_RESUME
-          # enum, and declares put_task_struct() in linux/sched/task.h.
-          export KCFLAGS='-DMODULE_IMPORT_NS\(x\)= -DTWA_RESUME=1 -include linux/sched/task.h'
-          echo "KCFLAGS: $KCFLAGS"
+          echo "Forcing Linux 4.19 SukiSU API compatibility through MAKEFLAGS..."
+          unset KCFLAGS KCPPFLAGS
+          export MAKEFLAGS='KCFLAGS=-DMODULE_IMPORT_NS\(x\)=\ -DTWA_RESUME=1 KCPPFLAGS=-include\ linux/sched/task.h'
+          echo "MAKEFLAGS: $MAKEFLAGS"
 
           echo "Building with SukiSU-Ultra v4.1.2..."
           bash ${{ inputs.script }} ${{ inputs.device }} ksu
