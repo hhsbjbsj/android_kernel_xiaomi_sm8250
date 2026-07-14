@@ -33,14 +33,14 @@ on:
           - build-miui.sh
 
       ksu:
-        description: 'Enable SuKiSU (SuKiSU-Ultra + SuSFS)'
+        description: 'Enable KernelSU (ReSukiSU-SuSFS)'
         required: true
         type: boolean
         default: true
 
 jobs:
   build:
-    name: Build Kernel for ${{ inputs.device }} (${{ inputs.script }}) (${{ inputs.ksu && 'SuKiSU' || 'NoSuKiSU' }})
+    name: Build Kernel for ${{ inputs.device }} (${{ inputs.script }}) (${{ inputs.ksu && 'KSU' || 'NoKSU' }})
     runs-on: ubuntu-latest
 
     steps:
@@ -85,16 +85,16 @@ jobs:
         echo "Using script: ${{ inputs.script }}"
 
         if [ "${{ inputs.ksu }}" == "true" ]; then
-          echo "Building with SuKiSU..."
-          bash ${{ inputs.script }} ${{ inputs.device }} sukisu
+          echo "Building with KernelSU..."
+          bash ${{ inputs.script }} ${{ inputs.device }} ksu
         else
-          echo "Building without SuKiSU..."
+          echo "Building without KernelSU..."
           bash ${{ inputs.script }} ${{ inputs.device }}
         fi
 
     - name: Upload Artifacts
       uses: actions/upload-artifact@v6
       with:
-        name: Kernel-${{ inputs.device }}-${{ inputs.script }}-${{ inputs.ksu && 'SuKiSU' || 'NoSuKiSU' }}-${{ github.run_number }}
+        name: Kernel-${{ inputs.device }}-${{ inputs.script }}-${{ inputs.ksu && 'KSU' || 'NoKSU' }}-${{ github.run_number }}
         path: ./*.zip
         if-no-files-found: error
