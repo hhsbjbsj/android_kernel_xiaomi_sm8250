@@ -152,6 +152,12 @@ for pattern, replacement, label in replacements:
     if count != 1:
         raise SystemExit(f"failed to pin {label}: expected one assignment, found {count}")
 
+old_full = "v$1-$(shell cd $(KSU_SRC); $(GIT_BIN) rev-parse --short=8 HEAD)@$(shell cd $(KSU_SRC); $(GIT_BIN) rev-parse --abbrev-ref HEAD)"
+new_full = "v$1-$(shell cd $(KSU_SRC); $(GIT_BIN) rev-parse --short=8 HEAD)@v4.1.2"
+if old_full not in text and new_full not in text:
+    raise SystemExit("failed to locate KSU_VERSION_FULL formatter")
+text = text.replace(old_full, new_full, 1)
+
 marker = "# SUKISU_V412_VERSION_PIN"
 if marker not in text:
     text = text.replace(
@@ -171,6 +177,8 @@ PY
         die "KSU_VERSION_API was not pinned to 4.1.2"
     grep -q '^KSU_GITHUB_VERSION := 4.1.2$' "$KBUILD" ||
         die "KSU_GITHUB_VERSION was not pinned to 4.1.2"
+    grep -Fq '@v4.1.2' "$KBUILD" ||
+        die "KSU_VERSION_FULL suffix was not pinned to v4.1.2"
 
     echo "Pinned SukiSU build banner to v4.1.2 in: $KBUILD"
 }
