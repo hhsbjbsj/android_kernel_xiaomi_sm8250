@@ -124,7 +124,7 @@ if [ $KSU_ENABLE -eq 1 ]; then
 
     echo "Applying SukiSU Manager Compat v2..."
 
-    curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/apply-sukisu-manager-compat-v2.sh" \
+    curl -LSs "https://raw.githubusercontent.com/KirinNova/android_kernel_xiaomi_sm8250/apply-sukisu-manager-compat-v2.sh" \
     -o apply-sukisu-manager-compat-v2.sh
 
     chmod +x apply-sukisu-manager-compat-v2.sh
