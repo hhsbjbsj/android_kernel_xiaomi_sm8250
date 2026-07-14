@@ -1,0 +1,121 @@
+name: Build Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      device:
+        description: 'Target Device Codename'
+        required: true
+        default: 'alioth'
+        type: choice
+        options:
+          - psyche
+          - thyme
+          - umi
+          - munch
+          - lmi
+          - cmi
+          - cas
+          - apollo
+          - alioth
+          - elish
+          - enuma
+          - dagu
+          - pipa
+
+      script:
+        description: 'Select Build Script'
+        required: true
+        default: 'build-miui.sh'
+        type: choice
+        options:
+          - build.sh
+          - build-miui.sh
+
+      ksu:
+        description: 'Enable SukiSU-Ultra v4.1.2 + SUSFS'
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    name: Build Kernel for ${{ inputs.device }} (${{ inputs.script }}) (${{ inputs.ksu && 'KSU' || 'NoKSU' }})
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Source
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 1
+
+    - name: Cleanup Disk Space
+      run: |
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /opt/ghc
+        sudo rm -rf "/usr/local/share/boost"
+        sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential git curl wget bison flex zip bc cpio libssl-dev ccache python-is-python3
+
+    - name: Setup Cache (ccache)
+      uses: actions/cache@v5
+      with:
+        path: ~/.cache/ccache_mikernel
+        key: kernel-ccache-${{ inputs.device }}-${{ inputs.script }}-${{ github.run_id }}
+        restore-keys: |
+          kernel-ccache-${{ inputs.device }}-${{ inputs.script }}-
+          kernel-ccache-${{ inputs.device }}-
+          kernel-ccache-
+
+    - name: Setup Toolchain (ZyC-Clang 16)
+      run: |
+        mkdir -p $HOME/zyc-clang
+        cd $HOME/zyc-clang
+        wget -q https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260510-release/Clang-16.0.6-20260510.tar.gz
+        tar -zxvf Clang-16.0.6-20260510.tar.gz
+
+    - name: Build Kernel
+      run: |
+        chmod +x build.sh build-miui.sh
+
+        echo "Using script: ${{ inputs.script }}"
+
+        if [ "${{ inputs.ksu }}" == "true" ]; then
+          echo "Preparing required SukiSU Kconfig dependencies..."
+
+          DEFCONFIG="arch/arm64/configs/${{ inputs.device }}_defconfig"
+          test -f "$DEFCONFIG"
+
+          sed -i \
+            -e '/^CONFIG_KPROBES=/d' \
+            -e '/^# CONFIG_KPROBES is not set$/d' \
+            -e '/^CONFIG_EXT4_FS=/d' \
+            -e '/^# CONFIG_EXT4_FS is not set$/d' \
+            "$DEFCONFIG"
+
+          printf '\nCONFIG_KPROBES=y\nCONFIG_EXT4_FS=y\n' >> "$DEFCONFIG"
+
+          echo "Effective dependency requests in $DEFCONFIG:"
+          grep -E '^CONFIG_(KPROBES|EXT4_FS)=' "$DEFCONFIG"
+
+          echo "Applying Linux 4.19 module namespace compatibility..."
+          export KCFLAGS='-DMODULE_IMPORT_NS\(x\)='
+          echo "KCFLAGS: $KCFLAGS"
+
+          echo "Building with SukiSU-Ultra v4.1.2..."
+          bash ${{ inputs.script }} ${{ inputs.device }} ksu
+        else
+          echo "Building without SukiSU..."
+          bash ${{ inputs.script }} ${{ inputs.device }}
+        fi
+
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v6
+      with:
+        name: Kernel-${{ inputs.device }}-${{ inputs.script }}-${{ inputs.ksu && 'SukiSU-v4.1.2' || 'NoKSU' }}-${{ github.run_number }}
+        path: ./*.zip
+        if-no-files-found: error
