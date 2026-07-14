@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       device:
-        description: 'Target Device Codename (e.g., lmi, umi)'
+        description: 'Target Device Codename'
         required: true
-        default: 'lmi'
+        default: 'alioth'
         type: choice
         options:
           - psyche
@@ -26,21 +26,21 @@ on:
       script:
         description: 'Select Build Script'
         required: true
-        default: 'build.sh'
+        default: 'build-miui.sh'
         type: choice
         options:
           - build.sh
           - build-miui.sh
 
       ksu:
-        description: 'Enable KernelSU (ReSukiSU-SuSFS)'
+        description: 'Enable SukiSU-Ultra v4.1.2 + SUSFS'
         required: true
         type: boolean
         default: true
 
 jobs:
   build:
-    name: Build Kernel for ${{ inputs.device }} (${{ inputs.script }}) (${{ inputs.ksu && 'KSU' || 'NoKSU' }})
+    name: Build Kernel for ${{ inputs.device }} (${{ inputs.script }}) (${{ inputs.ksu && 'SukiSU-v4.1.2' || 'NoKSU' }})
     runs-on: ubuntu-latest
 
     steps:
@@ -82,6 +82,7 @@ jobs:
       run: |
         chmod +x build.sh build-miui.sh
 
+        echo "Workflow source commit: $GITHUB_SHA"
         echo "Using script: ${{ inputs.script }}"
 
         if [ "${{ inputs.ksu }}" == "true" ]; then
@@ -102,20 +103,22 @@ jobs:
           echo "Effective dependency requests in $DEFCONFIG:"
           grep -E '^CONFIG_(KPROBES|EXT4_FS)=' "$DEFCONFIG"
 
-          echo "Applying Linux 4.19 module namespace compatibility..."
-          export KCFLAGS='-DMODULE_IMPORT_NS\(x\)='
+          echo "Applying Linux 4.19 SukiSU API compatibility..."
+          # Linux 4.19 uses task_work_add(..., bool notify), has no TWA_RESUME
+          # enum, and declares put_task_struct() in linux/sched/task.h.
+          export KCFLAGS='-DMODULE_IMPORT_NS\(x\)= -DTWA_RESUME=1 -include linux/sched/task.h'
           echo "KCFLAGS: $KCFLAGS"
 
-          echo "Building with KernelSU..."
+          echo "Building with SukiSU-Ultra v4.1.2..."
           bash ${{ inputs.script }} ${{ inputs.device }} ksu
         else
-          echo "Building without KernelSU..."
+          echo "Building without SukiSU..."
           bash ${{ inputs.script }} ${{ inputs.device }}
         fi
 
     - name: Upload Artifacts
       uses: actions/upload-artifact@v6
       with:
-        name: Kernel-${{ inputs.device }}-${{ inputs.script }}-${{ inputs.ksu && 'KSU' || 'NoKSU' }}-${{ github.run_number }}
+        name: Kernel-${{ inputs.device }}-${{ inputs.script }}-${{ inputs.ksu && 'SukiSU-v4.1.2' || 'NoKSU' }}-${{ github.run_number }}
         path: ./*.zip
         if-no-files-found: error
