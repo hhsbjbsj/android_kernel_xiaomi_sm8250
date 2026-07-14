@@ -114,6 +114,14 @@ if [ $KSU_ENABLE -eq 1 ]; then
 
     curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
 
+    echo "========== Locate files =========="
+          find KernelSU -name "ksud.c"
+          find KernelSU -name "allowlist.c"
+          find KernelSU -name "dispatch.c"
+          find KernelSU -name "rules.c"
+grep -R "KSU_APP_PROFILE_VER" KernelSU 2>/dev/null
+     echo "=================================="
+
     echo "Applying SukiSU Manager Compat v4..."
 
     chmod +x apply-sukisu-manager-compat.sh
