@@ -98,14 +98,15 @@ clang --version
 
 
 # ==============================================================================
-#                       SukiSU-Ultra Integration Block
+#                       SukiSU-Ultra v4.1.2 Integration
 # ==============================================================================
 
 KSU_ZIP_STR="NoKernelSU"
+SUKISU_TAG="v4.1.2"
 
 if [ "${2:-}" = "ksu" ]; then
     KSU_ENABLE=1
-    KSU_ZIP_STR="ReSukiSU-SuSFS"
+    KSU_ZIP_STR="SukiSU-${SUKISU_TAG}-SuSFS"
 else
     KSU_ENABLE=0
 fi
@@ -115,7 +116,7 @@ echo "TARGET_DEVICE: $TARGET_DEVICE"
 if [ "$KSU_ENABLE" -eq 1 ]; then
     echo
     echo "================================================================"
-    echo "                 Setting up SukiSU-Ultra"
+    echo "              Setting up SukiSU-Ultra ${SUKISU_TAG}"
     echo "================================================================"
 
     SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -124,157 +125,107 @@ if [ "$KSU_ENABLE" -eq 1 ]; then
 
     echo "Kernel source root: $SCRIPT_DIR"
     echo "KernelSU source:    $KSU_DIR"
+    echo "Pinned SukiSU tag:  $SUKISU_TAG"
 
     echo
-    echo "[1/5] Downloading and integrating SukiSU-Ultra..."
+    echo "[1/5] Downloading and integrating pinned SukiSU-Ultra..."
 
+    # Use the setup script from the same immutable tag that will be compiled.
+    # Do not follow main: v4.1.3 introduced a large kernel-side refactor that
+    # is substantially less suitable for this Linux 4.19 Non-GKI tree.
     curl -fLSs \
-        "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" |
-        bash -s -- main
-
-    if [ ! -d "$KSU_DIR" ]; then
-        echo "Error: KernelSU source directory was not created."
-        echo "Expected directory:"
-        echo "  $KSU_DIR"
-        exit 1
-    fi
+        "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/${SUKISU_TAG}/kernel/setup.sh" |
+        bash -s -- "$SUKISU_TAG"
 
     if [ ! -d "$KSU_DIR/.git" ]; then
-        echo "Error: KernelSU is not a valid Git repository:"
+        echo "Error: KernelSU source directory was not created as a Git repository:"
         echo "  $KSU_DIR"
         exit 1
     fi
 
-    echo
-    echo "[2/5] Checking SukiSU source layout..."
+    ACTUAL_TAG="$(git -C "$KSU_DIR" describe --tags --exact-match HEAD 2>/dev/null || true)"
+    if [ "$ACTUAL_TAG" != "$SUKISU_TAG" ]; then
+        echo "Error: unexpected SukiSU revision."
+        echo "Expected exact tag: $SUKISU_TAG"
+        echo "Actual exact tag:   ${ACTUAL_TAG:-none}"
+        git -C "$KSU_DIR" log -1 --oneline || true
+        exit 1
+    fi
 
     echo
-    echo "---------------- KernelSU commit ----------------"
+    echo "[2/5] Checking SukiSU v4.1.2 source layout..."
 
     git -C "$KSU_DIR" log -1 \
         --format='Commit: %H%nDate:   %cd%nTitle:  %s' \
         --date=iso || true
 
-    echo
-    echo "---------------- Runtime source -----------------"
-
-    find "$KSU_DIR/kernel/runtime" \
-        -maxdepth 1 \
-        -type f \
-        \( \
-            -name "boot_event.c" -o \
-            -name "ksud.c" \
-        \) \
-        -print 2>/dev/null || true
-
-    echo
-    echo "---------------- Required files -----------------"
-
     for file in \
-        "$KSU_DIR/kernel/policy/allowlist.c" \
-        "$KSU_DIR/kernel/supercall/dispatch.c"; do
-
+        "$KSU_DIR/kernel/allowlist.c" \
+        "$KSU_DIR/kernel/supercalls.c" \
+        "$KSU_DIR/kernel/ksud.c" \
+        "$KSU_DIR/kernel/app_profile.h" \
+        "$KSU_DIR/kernel/Kconfig"; do
         if [ ! -f "$file" ]; then
-            echo "Error: Required SukiSU source file is missing:"
+            echo "Error: required SukiSU v4.1.2 source file is missing:"
             echo "  $file"
             exit 1
         fi
-
         echo "$file"
     done
 
-    echo
-    echo "---------------- Profile version ----------------"
-
-    grep -Rns \
-        "KSU_APP_PROFILE_VER" \
-        "$KSU_DIR" \
-        2>/dev/null |
-        head -n 20 || true
-
-    echo "--------------------------------------------------"
+    PROFILE_VER="$(awk '/^[[:space:]]*#define[[:space:]]+KSU_APP_PROFILE_VER[[:space:]]+[0-9]+/{print $3; exit}' "$KSU_DIR/kernel/app_profile.h")"
+    if [ "$PROFILE_VER" != "2" ]; then
+        echo "Error: pinned v4.1.2 was expected to use app-profile ABI v2."
+        echo "Detected ABI: ${PROFILE_VER:-unknown}"
+        exit 1
+    fi
+    echo "Verified app-profile ABI: v$PROFILE_VER"
 
     echo
-    echo "[3/5] Preparing SukiSU Manager compatibility script..."
+    echo "[3/5] Preparing v4.1.2 manager detection compatibility..."
 
     if [ ! -f "$COMPAT_SCRIPT" ]; then
-        echo "Error: Manager compatibility script was not found."
-        echo
-        echo "Expected file:"
+        echo "Error: compatibility script was not found:"
         echo "  $COMPAT_SCRIPT"
-        echo
-        echo "Please place the script at:"
-        echo "  scripts/apply-sukisu-manager-compat.sh"
         exit 1
     fi
 
     sed -i 's/\r$//' "$COMPAT_SCRIPT"
     chmod +x "$COMPAT_SCRIPT"
-
-    echo "Compatibility script:"
-    echo "  $COMPAT_SCRIPT"
-
-    echo
-    echo "Compatibility script SHA256:"
+    bash -n "$COMPAT_SCRIPT"
     sha256sum "$COMPAT_SCRIPT"
 
-    if ! grep -q \
-        'kernel/runtime/boot_event.c' \
-        "$COMPAT_SCRIPT"; then
-
-        echo
-        echo "Error: An old compatibility script was detected."
-        echo "The script does not support:"
-        echo "  kernel/runtime/boot_event.c"
-        exit 1
-    fi
-
-    if grep -q \
-        'unsupported source layout: kernel/runtime/ksud.c is missing' \
-        "$COMPAT_SCRIPT"; then
-
-        echo
-        echo "Error: Obsolete compatibility script detected."
-        echo "This version only supports kernel/runtime/ksud.c."
+    if ! grep -q 'SUKISU_V412_MANAGER_SCAN_COMPAT' "$COMPAT_SCRIPT"; then
+        echo "Error: the checked-in compatibility script is not the v4.1.2 version."
         exit 1
     fi
 
     echo
-    echo "[4/5] Applying SukiSU Manager Compat v2..."
-
+    echo "[4/5] Applying SukiSU v4.1.2 compatibility..."
     bash "$COMPAT_SCRIPT" "$KSU_DIR"
 
     echo
-    echo "Manager compatibility script completed."
-
-    echo
-    echo "[5/5] Verifying compatibility changes..."
-
+    echo "[5/5] Verifying pinned-version compatibility changes..."
     git -C "$KSU_DIR" diff --check
 
-    echo
     echo "Changed SukiSU files:"
-
     git -C "$KSU_DIR" diff --name-only -- \
-        kernel/policy/allowlist.c \
-        kernel/supercall/dispatch.c \
-        kernel/runtime/boot_event.c \
-        kernel/runtime/ksud.c \
-        kernel/core/init.c 2>/dev/null || true
-
-    echo
-    echo "Compatibility markers:"
+        kernel/Kconfig \
+        kernel/ksud.c || true
 
     grep -Rns \
-        -e "KSU_APP_PROFILE_SIZE_V2_V3" \
-        -e "migrated incoming app profile" \
-        -e "Initial packages.list scan for an already-installed manager" \
-        "$KSU_DIR/kernel" \
-        2>/dev/null || true
+        -e 'SUKISU_V412_MANAGER_SCAN_COMPAT' \
+        -e 'Initial packages.list scan for an already-installed manager' \
+        "$KSU_DIR/kernel" || true
+
+    if ! grep -q 'SUKISU_V412_MANAGER_SCAN_COMPAT' "$KSU_DIR/kernel/ksud.c"; then
+        echo "Error: initial manager scan compatibility was not applied."
+        exit 1
+    fi
 
     echo
     echo "================================================================"
-    echo "        SukiSU Manager Compat applied successfully"
+    echo "  SukiSU-Ultra v4.1.2 manager detection compatibility applied"
     echo "================================================================"
     echo
 else
@@ -282,7 +233,7 @@ else
 fi
 
 # ==============================================================================
-#                     End of SukiSU-Ultra Integration
+#                 End of SukiSU-Ultra v4.1.2 Integration
 # ==============================================================================
 
 echo "Integrating Baseband-guard..."
@@ -366,6 +317,8 @@ make $MAKE_ARGS ${TARGET_DEVICE}_defconfig
 
 if [ $KSU_ENABLE -eq 1 ]; then
     scripts/config --file out/.config \
+    -e KPROBES \
+    -e EXT4_FS \
     -e KSU \
     -e KSU_SUSFS \
     -e KSU_SUSFS_SUS_PATH \
@@ -376,7 +329,7 @@ if [ $KSU_ENABLE -eq 1 ]; then
     -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
     -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
     -e KSU_SUSFS_OPEN_REDIRECT \
-    -e KSU_SUSFS_SUS_MAP 
+    -e KSU_SUSFS_SUS_MAP
 else
     scripts/config --file out/.config -d KSU
 fi
@@ -419,10 +372,10 @@ make $MAKE_ARGS olddefconfig
 
 if [ "$KSU_ENABLE" -eq 1 ]; then
     echo "========== Effective SukiSU / SUSFS config =========="
-    grep -E '^CONFIG_KSU(=|_)' out/.config | sort || true
+    grep -E '^CONFIG_(KPROBES|EXT4_FS|KSU)(=|_)' out/.config | sort || true
     echo "======================================================"
 
-    for required_option in CONFIG_KSU CONFIG_KSU_SUSFS; do
+    for required_option in CONFIG_KPROBES CONFIG_EXT4_FS CONFIG_KSU CONFIG_KSU_SUSFS; do
         if ! grep -qx "${required_option}=y" out/.config; then
             echo "Error: ${required_option}=y is missing from the effective kernel config."
             echo "The kernel would compile without working SukiSU/SUSFS support."
