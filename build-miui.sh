@@ -113,6 +113,10 @@ if [ $KSU_ENABLE -eq 1 ]; then
     echo "KSU is enabled"
 
     curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
+   
+    echo "========== KernelSU Tree =========="
+        find KernelSU -type f | sort
+    echo "=================================="
 
     echo "Applying SukiSU Manager Compat v4..."
 
