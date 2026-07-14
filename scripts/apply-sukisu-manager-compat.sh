@@ -4,8 +4,9 @@ set -euo pipefail
 # SUKISU_V412_MANAGER_SCAN_COMPAT
 # Target: SukiSU-Ultra v4.1.2 (app-profile ABI v2, pre-v4.1.3 layout).
 # This script intentionally does NOT apply the v2/v3 -> v4 ABI migration used
-# by SukiSU v4.1.3. It only supplies the SUSFS Kconfig symbols already backed
-# by this kernel tree and performs an initial manager APK scan at post-fs-data.
+# by SukiSU v4.1.3. It supplies the SUSFS Kconfig symbols already backed by
+# this kernel tree, pins the build-time version banner to v4.1.2, and performs
+# an initial manager APK scan at post-fs-data.
 
 die() {
     printf 'error: %s\n' "$*" >&2
@@ -24,10 +25,11 @@ ACTUAL_TAG="$(git -C "$KSU_DIR" describe --tags --exact-match HEAD 2>/dev/null |
     die "this script only supports exact tag $EXPECTED_TAG; detected ${ACTUAL_TAG:-none}"
 
 KCONFIG="$KSU_DIR/kernel/Kconfig"
+KBUILD="$KSU_DIR/kernel/Kbuild"
 KSUD="$KSU_DIR/kernel/ksud.c"
 APP_PROFILE="$KSU_DIR/kernel/app_profile.h"
 
-for file in "$KCONFIG" "$KSUD" "$APP_PROFILE"; do
+for file in "$KCONFIG" "$KBUILD" "$KSUD" "$APP_PROFILE"; do
     [[ -f "$file" ]] || die "missing $file"
 done
 
@@ -118,6 +120,61 @@ KCONFIG_SUSFS
     done
 }
 
+pin_version_banner() {
+    python3 - "$KBUILD" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+
+replacements = [
+    (
+        r"^REPO_BRANCH\s*:=\s*.*$",
+        "REPO_BRANCH := v4.1.2",
+        "REPO_BRANCH",
+    ),
+    (
+        r"^KSU_VERSION_API\s*:=\s*.*$",
+        "KSU_VERSION_API := 4.1.2",
+        "KSU_VERSION_API",
+    ),
+    (
+        r"^KSU_GITHUB_VERSION\s*:=\s*.*$",
+        "KSU_GITHUB_VERSION := 4.1.2",
+        "KSU_GITHUB_VERSION",
+    ),
+]
+
+for pattern, replacement, label in replacements:
+    text, count = re.subn(pattern, replacement, text, count=1, flags=re.M)
+    if count != 1:
+        raise SystemExit(f"failed to pin {label}: expected one assignment, found {count}")
+
+marker = "# SUKISU_V412_VERSION_PIN"
+if marker not in text:
+    text = text.replace(
+        "REPO_OWNER := SukiSU-Ultra\n",
+        marker + "\nREPO_OWNER := SukiSU-Ultra\n",
+        1,
+    )
+
+path.write_text(text, encoding="utf-8")
+PY
+
+    grep -q '^# SUKISU_V412_VERSION_PIN$' "$KBUILD" ||
+        die "version pin marker was not written"
+    grep -q '^REPO_BRANCH := v4.1.2$' "$KBUILD" ||
+        die "REPO_BRANCH was not pinned to v4.1.2"
+    grep -q '^KSU_VERSION_API := 4.1.2$' "$KBUILD" ||
+        die "KSU_VERSION_API was not pinned to 4.1.2"
+    grep -q '^KSU_GITHUB_VERSION := 4.1.2$' "$KBUILD" ||
+        die "KSU_GITHUB_VERSION was not pinned to 4.1.2"
+
+    echo "Pinned SukiSU build banner to v4.1.2 in: $KBUILD"
+}
+
 patch_initial_manager_scan() {
     if grep -q 'SUKISU_V412_MANAGER_SCAN_COMPAT' "$KSUD"; then
         echo "Initial manager scan compatibility is already applied."
@@ -159,13 +216,16 @@ PY
 }
 
 ensure_susfs_kconfig
+pin_version_banner
 patch_initial_manager_scan
 
-git -C "$KSU_DIR" diff --check -- kernel/Kconfig kernel/ksud.c
+git -C "$KSU_DIR" diff --check -- kernel/Kconfig kernel/Kbuild kernel/ksud.c
 
 echo
 echo "SukiSU-Ultra v4.1.2 compatibility applied successfully."
 echo "Source directory : $KSU_DIR"
+echo "Exact source tag : $ACTUAL_TAG"
+echo "Source commit    : $(git -C "$KSU_DIR" rev-parse --short=8 HEAD)"
 echo "App-profile ABI  : v$PROFILE_VER"
 echo "Changed files:"
-git -C "$KSU_DIR" diff --name-only -- kernel/Kconfig kernel/ksud.c
+git -C "$KSU_DIR" diff --name-only -- kernel/Kconfig kernel/Kbuild kernel/ksud.c
