@@ -1,0 +1,177 @@
+diff --git a/kernel/policy/allowlist.c b/kernel/policy/allowlist.c
+--- a/kernel/policy/allowlist.c
++++ b/kernel/policy/allowlist.c
+@@ -123,6 +123,8 @@ static bool profile_valid(struct app_profile *profile)
+     return true;
+ }
+
++static void migrate_profile(u32 version, struct app_profile *profile);
++
+ static void release_perm_data(struct kref *ref)
+ {
+     struct perm_data *p = container_of(ref, struct perm_data, ref);
+@@ -139,6 +141,19 @@ int ksu_set_app_profile(struct app_profile *profile)
+     struct perm_data *p, *np;
+     int result = 0;
+
++#if KSU_APP_PROFILE_VER == 4
++    /*
++     * Manager builds using app-profile ABI v2/v3 submit a 776-byte
++     * prefix.  dispatch.c zero-fills the v4 tail before reaching here.
++     */
++    if (profile && (profile->version == 2 || profile->version == 3)) {
++        u32 old_version = profile->version;
++        migrate_profile(old_version, profile);
++        pr_info("migrated incoming app profile v%d to v%d: key=%s uid=%d\n",
++                old_version, KSU_APP_PROFILE_VER, profile->key, profile->curr_uid);
++    }
++#endif
++
+     if (!profile_valid(profile)) {
+         pr_err("Failed to set app profile: invalid profile!\n");
+         return -EINVAL;
+diff --git a/kernel/runtime/ksud.c b/kernel/runtime/ksud.c
+--- a/kernel/runtime/ksud.c
++++ b/kernel/runtime/ksud.c
+@@ -52,6 +52,9 @@ void on_post_fs_data(void)
+
+     ksu_load_allow_list();
+     ksu_observer_init();
++    /* packages.list may already exist before the observer is installed. */
++    if (unlikely(!ksu_is_manager_appid_valid()))
++        track_throne(false);
+     // sanity check, this may influence the performance
+ #if defined(CONFIG_KSU_SUSFS) && defined(KSU_COMPAT_USE_STATIC_KEY)
+     if (static_key_enabled(&ksu_is_input_hook_enabled)) {
+diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
+--- a/kernel/selinux/rules.c
++++ b/kernel/selinux/rules.c
+@@ -197,9 +197,6 @@ void apply_kernelsu_rules()
+     ksu_destroy_sepolicy(old_pol);
+
+     reset_avc_cache();
+-#ifdef CONFIG_KSU_SUSFS
+-    susfs_set_batch_sid();
+-#endif
+ out_unlock:
+     mutex_unlock(&selinux_state.policy_mutex);
+ #else
+@@ -255,6 +252,11 @@ out_flush:
+     smp_mb();
+     reset_avc_cache();
+ #endif
++
++#ifdef CONFIG_KSU_SUSFS
++    /* Run for both modern and legacy SELinux policy update paths. */
++    susfs_set_batch_sid();
++#endif
+ }
+
+ #define KSU_SEPOLICY_MAX_BATCH_SIZE (8U * 1024U * 1024U)
+diff --git a/kernel/supercall/dispatch.c b/kernel/supercall/dispatch.c
+--- a/kernel/supercall/dispatch.c
++++ b/kernel/supercall/dispatch.c
+@@ -279,26 +279,67 @@ static int do_get_manager_appid(void __user *arg)
+     return 0;
+ }
+
++#define KSU_APP_PROFILE_SIZE_V2_V3 776U
++
++static size_t app_profile_userspace_size(u32 version)
++{
++    if (version == 2 || version == 3)
++        return KSU_APP_PROFILE_SIZE_V2_V3;
++
++    if (version == KSU_APP_PROFILE_VER)
++        return sizeof(struct app_profile);
++
++    return 0;
++}
++
+ static int do_get_app_profile(void __user *arg)
+ {
+     uid_t uid;
++    u32 requested_version;
++    size_t profile_size;
+     struct app_profile *profile;
++    struct app_profile compat_profile;
++    const struct app_profile *out_profile;
+     int ret = 0;
+
++    if (copy_from_user(&requested_version,
++                       (char __user *)arg +
++                       offsetof(struct ksu_get_app_profile_cmd,
++                                profile.version),
++                       sizeof(requested_version))) {
++        pr_err("get_app_profile: copy profile version from user failed\n");
++        return -EFAULT;
++    }
++
+     if (copy_from_user(&uid, (char __user *)arg + offsetof(struct ksu_get_app_profile_cmd, profile.curr_uid),
+                        sizeof(uid_t))) {
+         pr_err("get_app_profile: copy_from_user failed\n");
+         return -EFAULT;
+     }
+
++    profile_size = app_profile_userspace_size(requested_version);
++    if (!profile_size) {
++        pr_err("get_app_profile: unsupported profile version: %u\n",
++               requested_version);
++        return -EINVAL;
++    }
++
+     rcu_read_lock();
+     profile = ksu_get_app_profile(uid);
+     rcu_read_unlock();
+     if (!profile) {
+         ret = -ENOENT;
+     } else {
+-        if (copy_to_user((char __user *)arg + offsetof(struct ksu_get_app_profile_cmd, profile), profile,
+-                         sizeof(struct app_profile))) {
++        out_profile = profile;
++        if (profile_size < sizeof(struct app_profile)) {
++            memcpy(&compat_profile, profile, sizeof(compat_profile));
++            compat_profile.version = requested_version;
++            out_profile = &compat_profile;
++        }
++
++        if (copy_to_user((char __user *)arg +
++                         offsetof(struct ksu_get_app_profile_cmd, profile),
++                         out_profile, profile_size)) {
+             pr_err("get_app_profile: copy_to_user failed\n");
+             ret = -EFAULT;
+         }
+@@ -309,10 +350,31 @@ static int do_get_app_profile(void __user *arg)
+
+ static int do_set_app_profile(void __user *arg)
+ {
+-    struct ksu_set_app_profile_cmd cmd;
++    struct ksu_set_app_profile_cmd cmd = { 0 };
++    u32 version;
++    size_t profile_size;
+     int ret;
+
+-    if (copy_from_user(&cmd, arg, sizeof(cmd))) {
++    if (copy_from_user(&version,
++                       (char __user *)arg +
++                       offsetof(struct ksu_set_app_profile_cmd,
++                                profile.version),
++                       sizeof(version))) {
++        pr_err("set_app_profile: copy profile version from user failed\n");
++        return -EFAULT;
++    }
++
++    profile_size = app_profile_userspace_size(version);
++    if (!profile_size) {
++        pr_err("set_app_profile: unsupported profile version: %u\n",
++               version);
++        return -EINVAL;
++    }
++
++    if (copy_from_user(&cmd.profile,
++                       (char __user *)arg +
++                       offsetof(struct ksu_set_app_profile_cmd, profile),
++                       profile_size)) {
+         pr_err("set_app_profile: copy_from_user failed\n");
+         return -EFAULT;
+     }
