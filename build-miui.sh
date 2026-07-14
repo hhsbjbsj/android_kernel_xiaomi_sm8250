@@ -111,7 +111,15 @@ echo "TARGET_DEVICE: $TARGET_DEVICE"
 
 if [ $KSU_ENABLE -eq 1 ]; then
     echo "KSU is enabled"
+
     curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
+
+    echo "Applying SukiSU Manager Compat v4..."
+
+    chmod +x apply-sukisu-manager-compat.sh
+    ./apply-sukisu-manager-compat.sh
+
+    echo "Manager Compat v4 applied."
 else
     echo "KSU is disabled"
 fi
