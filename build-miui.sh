@@ -124,10 +124,10 @@ grep -R "KSU_APP_PROFILE_VER" KernelSU 2>/dev/null
 
     echo "Applying SukiSU Manager Compat v4..."
 
-    chmod +x apply-sukisu-manager-compat.sh
-    ./apply-sukisu-manager-compat.sh
+    chmod +x apply-sukisu-manager-compat-v3-v4-2.sh
+    ./apply-sukisu-manager-compat-v3-v4-2.sh
 
-    echo "Manager Compat v4 applied."
+    echo "Manager Compat -2 applied."
 else
     echo "KSU is disabled"
 fi
