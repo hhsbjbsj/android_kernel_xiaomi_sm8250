@@ -115,19 +115,24 @@ if [ $KSU_ENABLE -eq 1 ]; then
     curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
 
     echo "========== Locate files =========="
-          find KernelSU -name "ksud.c"
-          find KernelSU -name "allowlist.c"
-          find KernelSU -name "dispatch.c"
-          find KernelSU -name "rules.c"
-grep -R "KSU_APP_PROFILE_VER" KernelSU 2>/dev/null
-     echo "=================================="
+    find KernelSU -name "ksud.c"
+    find KernelSU -name "allowlist.c"
+    find KernelSU -name "dispatch.c"
+    find KernelSU -name "rules.c"
+    grep -R "KSU_APP_PROFILE_VER" KernelSU 2>/dev/null
+    echo "=================================="
 
-    echo "Applying SukiSU Manager Compat v4..."
+    echo "Applying SukiSU Manager Compat v2..."
 
-    chmod +x apply-sukisu-manager-compat-v3-v4-2.sh
-    ./apply-sukisu-manager-compat-v3-v4-2.sh
+    curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/apply-sukisu-manager-compat-v2.sh" \
+    -o apply-sukisu-manager-compat-v2.sh
 
-    echo "Manager Compat -2 applied."
+    chmod +x apply-sukisu-manager-compat-v2.sh
+
+    "$PWD/apply-sukisu-manager-compat-v2.sh" "$PWD/KernelSU"
+
+    echo "Manager Compat v2 applied."
+
 else
     echo "KSU is disabled"
 fi
