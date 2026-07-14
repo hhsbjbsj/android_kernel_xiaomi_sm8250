@@ -11,12 +11,12 @@ TARGET_DEVICE=$1
 
 if [ -z "$1" ]; then
     echo "Error: No argument provided, please specific a target device." 
-    echo "If you need KernelSU, please add [ksu] as the second arg."
+    echo "If you need SuKiSU, please add [sukisu] as the second arg."
     echo "Examples:"
-    echo "Build for lmi(K30 Pro/POCO F2 Pro) without KernelSU:"
+    echo "Build for lmi(K30 Pro/POCO F2 Pro) without SuKiSU:"
     echo "    bash build.sh lmi"
-    echo "Build for umi(Mi10) with KernelSU:"
-    echo "    bash build.sh umi ksu"
+    echo "Build for umi(Mi10) with SuKiSU:"
+    echo "    bash build.sh umi sukisu"
     exit 1
 fi
 
@@ -98,22 +98,22 @@ clang --version
 
 
 
-KSU_ZIP_STR=NoKernelSU
-if [ "$2" == "ksu" ]; then
-    KSU_ENABLE=1
-    KSU_ZIP_STR=ReSukiSU-SuSFS
+SUKISU_ZIP_STR=NoSuKiSU
+if [ "$2" == "sukisu" ]; then
+    SUKISU_ENABLE=1
+    SUKISU_ZIP_STR=SuKiSU-SuSFS
 else
-    KSU_ENABLE=0
+    SUKISU_ENABLE=0
 fi
 
 
 echo "TARGET_DEVICE: $TARGET_DEVICE"
 
-if [ $KSU_ENABLE -eq 1 ]; then
-    echo "KSU is enabled"
-    curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
+if [ $SUKISU_ENABLE -eq 1 ]; then
+    echo "SuKiSU is enabled"
+    curl -LSs "https://raw.githubusercontent.com/SuKiSU-Ultra/SuKiSU-next/main/kernel/setup.sh" | bash
 else
-    echo "KSU is disabled"
+    echo "SuKiSU is disabled"
 fi
 
 echo "Integrating Baseband-guard..."
@@ -195,24 +195,24 @@ sed -i 's/\/\/39 01 00 00 11 00 03 51 03 FF/39 01 00 00 11 00 03 51 03 FF/g' ${d
 
 make $MAKE_ARGS ${TARGET_DEVICE}_defconfig
 
-if [ $KSU_ENABLE -eq 1 ]; then
+if [ $SUKISU_ENABLE -eq 1 ]; then
     scripts/config --file out/.config \
-    -e KSU \
+    -e SUKISU \
     -e THREAD_INFO_IN_TASK \
-    -e KSU_SUSFS \
-    -e KSU_SUSFS_SUS_PATH \
-    -e KSU_SUSFS_SUS_MOUNT \
-    -e KSU_SUSFS_SUS_KSTAT \
-    -e KSU_SUSFS_SPOOF_UNAME \
-    -e KSU_SUSFS_ENABLE_LOG \
-    -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
-    -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-    -e KSU_SUSFS_OPEN_REDIRECT \
-    -e KSU_SUSFS_SUS_MAP \
-    -e KSU_MULTI_MANAGER_SUPPORT \
-    -e KPM
+    -e SUKISU_SUSFS \
+    -e SUKISU_SUSFS_SUS_PATH \
+    -e SUKISU_SUSFS_SUS_MOUNT \
+    -e SUKISU_SUSFS_SUS_KSTAT \
+    -e SUKISU_SUSFS_SPOOF_UNAME \
+    -e SUKISU_SUSFS_ENABLE_LOG \
+    -e SUKISU_SUSFS_HIDE_SUKISU_SUSFS_SYMBOLS \
+    -e SUKISU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+    -e SUKISU_SUSFS_OPEN_REDIRECT \
+    -e SUKISU_SUSFS_SUS_MAP \
+    -e SUKISU_MULTI_MANAGER_SUPPORT \
+    -e SUKISU_KPM
 else
-    scripts/config --file out/.config -d KSU
+    scripts/config --file out/.config -d SUKISU
 fi
 
 scripts/config --file out/.config \
@@ -266,10 +266,10 @@ mv .dts.bak ${dts_source}
 rm -rf anykernel/kernels/
 mkdir -p anykernel/kernels/miui/
 
-# Patch for SukiSU KPM support. 
-if [ $KSU_ENABLE -eq 1 ]; then
+# Patch for SuKiSU KPM support. 
+if [ $SUKISU_ENABLE -eq 1 ]; then
     cd out/arch/arm64/boot/
-    wget https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/download/0.13.0/patch_linux
+    wget https://github.com/SuKiSU-Ultra/SuKiSU_KernelPatch_patch/releases/download/latest/patch_linux
     chmod +x patch_linux
     ./patch_linux
     rm Image
@@ -289,7 +289,7 @@ echo "Build for MIUI finished."
 
 cd anykernel 
 
-ZIP_FILENAME=APTKernel_MIUI_${TARGET_DEVICE}_${KSU_ZIP_STR}_$(date +'%Y%m%d_%H%M%S')_anykernel3_${GIT_COMMIT_ID}.zip
+ZIP_FILENAME=APTKernel_MIUI_${TARGET_DEVICE}_${SUKISU_ZIP_STR}_$(date +'%Y%m%d_%H%M%S')_anykernel3_${GIT_COMMIT_ID}.zip
 
 zip -r9 $ZIP_FILENAME ./* -x .git .gitignore out/ ./*.zip
 
