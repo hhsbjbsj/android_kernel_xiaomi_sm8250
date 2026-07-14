@@ -1,0 +1,122 @@
+name: SukiSU Preflight
+
+on:
+  workflow_dispatch:
+    inputs:
+      device:
+        description: 'Target device codename'
+        required: true
+        default: 'alioth'
+        type: choice
+        options:
+          - alioth
+          - psyche
+          - thyme
+          - umi
+          - munch
+          - lmi
+          - cmi
+          - cas
+          - apollo
+          - elish
+          - enuma
+          - dagu
+          - pipa
+
+jobs:
+  preflight:
+    name: Preflight SukiSU v4.1.2 for ${{ inputs.device }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Show exact source revision
+        run: |
+          echo "Workflow source commit: $GITHUB_SHA"
+          git log -1 --oneline
+          echo "Linux 4.19 task_work compatibility header:"
+          grep -nE 'linux/sched/task.h|TWA_RESUME' include/linux/task_work.h
+          grep -q '^#define TWA_RESUME 1$' include/linux/task_work.h
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential git curl wget bison flex zip bc cpio libssl-dev ccache python-is-python3
+
+      - name: Restore ZyC-Clang 16
+        uses: actions/cache@v5
+        with:
+          path: ~/zyc-clang
+          key: zyc-clang-16.0.6-20260510
+
+      - name: Set up ZyC-Clang 16
+        run: |
+          if [ ! -x "$HOME/zyc-clang/bin/clang" ]; then
+            rm -rf "$HOME/zyc-clang"
+            mkdir -p "$HOME/zyc-clang"
+            cd "$HOME/zyc-clang"
+            wget -q https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260510-release/Clang-16.0.6-20260510.tar.gz
+            tar -xzf Clang-16.0.6-20260510.tar.gz
+          fi
+          "$HOME/zyc-clang/bin/clang" --version
+
+      - name: Restore preflight ccache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ccache_mikernel
+          key: sukisu-preflight-${{ inputs.device }}-${{ hashFiles('build-miui.sh', 'scripts/apply-sukisu-manager-compat.sh', 'include/linux/task_work.h') }}
+          restore-keys: |
+            sukisu-preflight-${{ inputs.device }}-
+            kernel-ccache-${{ inputs.device }}-
+            kernel-ccache-
+
+      - name: Convert full build into focused preflight
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('build-miui.sh')
+          text = path.read_text(encoding='utf-8')
+          needle = '''
+          make $MAKE_ARGS -j$(nproc)
+
+          if [ "$KSU_ENABLE" -eq 1 ]; then
+          '''
+          replacement = '''
+          if [ "$KSU_ENABLE" -eq 1 ]; then
+              echo "=============================================================="
+              echo "Fast preflight: compiling only SukiSU and SUSFS objects"
+              echo "=============================================================="
+              make $MAKE_ARGS -j$(nproc) V=1 drivers/kernelsu/ fs/susfs.o
+              test -s out/drivers/kernelsu/built-in.o
+              test -s out/fs/susfs.o
+              echo "SukiSU/SUSFS preflight passed. Full kernel build intentionally skipped."
+              exit 0
+          fi
+
+          make $MAKE_ARGS -j$(nproc)
+
+          if [ "$KSU_ENABLE" -eq 1 ]; then
+          '''
+          if text.count(needle) != 1:
+              raise SystemExit(f'expected one full-build insertion point, found {text.count(needle)}')
+          path.write_text(text.replace(needle, replacement, 1), encoding='utf-8')
+          PY
+          bash -n build-miui.sh
+          grep -n 'Fast preflight' build-miui.sh
+
+      - name: Compile SukiSU and SUSFS only
+        env:
+          CCACHE_DIR: /home/runner/.cache/ccache_mikernel
+        run: |
+          chmod +x build-miui.sh scripts/apply-sukisu-manager-compat.sh
+          unset KCFLAGS KCPPFLAGS MAKEFLAGS
+          bash build-miui.sh "${{ inputs.device }}" ksu
+
+      - name: Show ccache statistics
+        if: always()
+        run: ccache -s || true
