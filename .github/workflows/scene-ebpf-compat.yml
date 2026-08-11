@@ -12,6 +12,7 @@ on:
       - 'kernel/trace/**'
       - 'include/uapi/linux/bpf.h'
       - 'include/linux/sukisu_4_19_compat.h'
+      - 'scripts/apply-sukisu-manager-compat.sh'
       - 'scripts/link-vmlinux.sh'
       - 'build-miui.sh'
 
