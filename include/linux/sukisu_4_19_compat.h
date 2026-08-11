@@ -7,12 +7,22 @@
  * this Linux 4.19 tree. 4.19 has no symbol namespace import machinery, so the
  * correct compatibility behavior is a no-op.
  *
+ * SukiSU v4.1.2 also references __NR_clone3 in its syscall fast path. clone3
+ * uses syscall number 435 on arm64, but this 4.19 tree predates the syscall
+ * and therefore does not define the macro. Defining only the number keeps the
+ * newer source buildable; the old kernel still has no clone3 syscall-table
+ * entry, so this case is never observed at runtime.
+ *
  * Keep this header intentionally dependency-free: it is force-included by
  * KCPPFLAGS during the build, including very early host/kernel objects before
  * generated headers such as generated/timeconst.h exist.
  */
 #ifndef MODULE_IMPORT_NS
 #define MODULE_IMPORT_NS(ns)
+#endif
+
+#ifndef __NR_clone3
+#define __NR_clone3 435
 #endif
 
 #endif /* _LINUX_SUKISU_4_19_COMPAT_H */
