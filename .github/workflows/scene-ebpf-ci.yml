@@ -1,0 +1,127 @@
+name: Scene eBPF Compatibility Build
+
+on:
+  push:
+    branches:
+      - scene-ebpf-support
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Scene eBPF - ${{ matrix.device }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        device:
+          - lmi
+          - cmi
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Cleanup disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential git curl wget bison flex zip bc cpio \
+            libssl-dev libelf-dev zlib1g-dev ccache python-is-python3 dwarves binutils
+          pahole --version
+
+      - name: Setup toolchain
+        run: |
+          mkdir -p "$HOME/zyc-clang"
+          cd "$HOME/zyc-clang"
+          wget -q https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260510-release/Clang-16.0.6-20260510.tar.gz
+          tar -xzf Clang-16.0.6-20260510.tar.gz
+          "$HOME/zyc-clang/bin/clang" --version
+
+      - name: Apply Scene eBPF compatibility config
+        run: |
+          chmod +x scripts/apply-scene-ebpf-config.sh
+          bash scripts/apply-scene-ebpf-config.sh "${{ matrix.device }}"
+          grep -E '^(CONFIG_(CGROUP_BPF|BPF_SYSCALL|BPF_JIT|BPF_EVENTS|KPROBES|KPROBE_EVENTS|DEBUG_INFO|DEBUG_INFO_BTF|KALLSYMS|IPV6)=y)' \
+            "arch/arm64/configs/${{ matrix.device }}_defconfig"
+
+      - name: Build kernel
+        run: |
+          chmod +x build.sh tools/bpf/resolve_btfids/resolve_btfids
+          bash build.sh "${{ matrix.device }}"
+
+      - name: Verify Scene kernel capabilities
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f out/.config
+          test -f out/vmlinux
+
+          required=(
+            CGROUP_BPF
+            BPF_SYSCALL
+            BPF_JIT
+            BPF_EVENTS
+            KPROBES
+            KPROBE_EVENTS
+            DEBUG_INFO
+            DEBUG_INFO_BTF
+            KALLSYMS
+            IPV6
+          )
+
+          for cfg in "${required[@]}"; do
+            if ! grep -qx "CONFIG_${cfg}=y" out/.config; then
+              echo "::error::CONFIG_${cfg}=y is missing from final out/.config"
+              grep -E "^(CONFIG_${cfg}=|# CONFIG_${cfg} is not set)" out/.config || true
+              exit 1
+            fi
+          done
+
+          if ! readelf -S out/vmlinux | grep -qE '[[:space:]]\.BTF[[:space:]]'; then
+            echo "::error::Final vmlinux does not contain a .BTF section"
+            exit 1
+          fi
+
+          grep -q 'BPF_CGROUP_INET4_BIND' include/uapi/linux/bpf.h
+          grep -q 'BPF_CGROUP_INET6_BIND' include/uapi/linux/bpf.h
+          grep -q 'BPF_CGROUP_INET4_CONNECT' include/uapi/linux/bpf.h
+          grep -q 'BPF_CGROUP_INET6_CONNECT' include/uapi/linux/bpf.h
+
+          bind_sym=$(awk '$3 ~ /^(__sys_bind|__se_sys_bind|sys_bind|SyS_bind|__arm64_sys_bind)$/ {print $3; exit}' out/System.map || true)
+          getsock_sym=$(awk '$3 ~ /^(__sys_getsockname|__se_sys_getsockname|sys_getsockname|SyS_getsockname|__arm64_sys_getsockname)$/ {print $3; exit}' out/System.map || true)
+          close_sym=$(awk '$3 ~ /^(__sys_close|__se_sys_close|sys_close|SyS_close|__arm64_sys_close)$/ {print $3; exit}' out/System.map || true)
+
+          if [ -z "$bind_sym" ]; then
+            echo "::error::No bind syscall symbol supported by Scene loader found in System.map"
+            exit 1
+          fi
+          if [ -z "$getsock_sym" ]; then
+            echo "::error::No getsockname syscall symbol supported by Scene loader found in System.map"
+            exit 1
+          fi
+
+          echo "Scene compile-time compatibility checks passed"
+          echo "bind kprobe symbol: $bind_sym"
+          echo "getsockname kprobe symbol: $getsock_sym"
+          echo "close cleanup symbol: ${close_sym:-optional/not found}"
+          readelf -S out/vmlinux | grep -E '[[:space:]]\.BTF[[:space:]]'
+
+      - name: Upload kernel artifacts
+        if: success()
+        uses: actions/upload-artifact@v6
+        with:
+          name: Scene-eBPF-${{ matrix.device }}-${{ github.run_number }}
+          path: |
+            ./*.zip
+            out/vmlinux
+            out/.config
+          if-no-files-found: error
