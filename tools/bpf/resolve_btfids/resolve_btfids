@@ -1,0 +1,10 @@
+#!/bin/sh
+# Compatibility stub for this vendor 4.19 tree.
+#
+# The tree has BTF generation in scripts/link-vmlinux.sh but does not carry
+# the newer tools/bpf/resolve_btfids host utility. Scene Port Hider uses the
+# generated vmlinux BTF for CO-RE plus legacy cgroup/kprobe attachment; it
+# does not require kernel BTF-ID based fentry/fexit attachment.
+#
+# Keep this deliberately minimal: do not synthesize BTF IDs.
+exit 0
