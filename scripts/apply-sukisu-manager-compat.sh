@@ -20,8 +20,9 @@ APP_PROFILE="$KSU_DIR/kernel/app_profile.h"
 APP_PROFILE_C="$KSU_DIR/kernel/app_profile.c"
 PKG_OBSERVER="$KSU_DIR/kernel/pkg_observer.c"
 FILE_WRAPPER="$KSU_DIR/kernel/file_wrapper.c"
+MANUAL_SU="$KSU_DIR/kernel/manual_su.c"
 
-for file in "$KCONFIG" "$KBUILD" "$KSUD" "$APP_PROFILE" "$APP_PROFILE_C" "$PKG_OBSERVER" "$FILE_WRAPPER"; do
+for file in "$KCONFIG" "$KBUILD" "$KSUD" "$APP_PROFILE" "$APP_PROFILE_C" "$PKG_OBSERVER" "$FILE_WRAPPER" "$MANUAL_SU"; do
     [[ -f "$file" ]] || die "missing $file"
 done
 
@@ -179,14 +180,30 @@ PY
     echo "Patched Linux 4.19 file_operations compatibility in: $FILE_WRAPPER"
 }
 
+patch_manual_su_random_419() {
+    grep -q '^#include <linux/random.h>$' "$MANUAL_SU" && return 0
+    python3 - "$MANUAL_SU" <<'PY'
+from pathlib import Path
+import sys
+p=Path(sys.argv[1]); t=p.read_text()
+anchor='#include <linux/binfmts.h>\n'
+if t.count(anchor)!=1: raise SystemExit('manual_su include anchor mismatch')
+t=t.replace(anchor, anchor + '#include <linux/random.h> /* SUKISU_V412_RANDOM_419_COMPAT */\n', 1)
+p.write_text(t)
+PY
+    grep -q '^#include <linux/random.h>' "$MANUAL_SU" || die "manual_su random API include missing"
+    echo "Added Linux random API declaration for SukiSU manual_su: $MANUAL_SU"
+}
+
 ensure_susfs_kconfig
 pin_version_banner
 patch_initial_manager_scan
 patch_seccomp_filter_count_419
 patch_pkg_observer_fsnotify_419
 patch_file_wrapper_vfs_419
+patch_manual_su_random_419
 
-git -C "$KSU_DIR" diff --check -- kernel/Kconfig kernel/Kbuild kernel/ksud.c kernel/app_profile.c kernel/pkg_observer.c kernel/file_wrapper.c
+git -C "$KSU_DIR" diff --check -- kernel/Kconfig kernel/Kbuild kernel/ksud.c kernel/app_profile.c kernel/pkg_observer.c kernel/file_wrapper.c kernel/manual_su.c
 
 echo
 echo "SukiSU-Ultra v4.1.2 compatibility applied successfully."
@@ -195,4 +212,4 @@ echo "Exact source tag : $ACTUAL_TAG"
 echo "Source commit    : $(git -C "$KSU_DIR" rev-parse --short=8 HEAD)"
 echo "App-profile ABI  : v$PROFILE_VER"
 echo "Changed files:"
-git -C "$KSU_DIR" diff --name-only -- kernel/Kconfig kernel/Kbuild kernel/ksud.c kernel/app_profile.c kernel/pkg_observer.c kernel/file_wrapper.c
+git -C "$KSU_DIR" diff --name-only -- kernel/Kconfig kernel/Kbuild kernel/ksud.c kernel/app_profile.c kernel/pkg_observer.c kernel/file_wrapper.c kernel/manual_su.c
