@@ -11,6 +11,7 @@ on:
       - 'kernel/bpf/**'
       - 'kernel/trace/**'
       - 'include/uapi/linux/bpf.h'
+      - 'include/linux/sukisu_4_19_compat.h'
       - 'scripts/link-vmlinux.sh'
       - 'build-miui.sh'
 
@@ -93,6 +94,7 @@ jobs:
           grep -q 'BPF_CGROUP_INET4_BIND' include/uapi/linux/bpf.h
           grep -q 'BPF_CGROUP_INET6_BIND' include/uapi/linux/bpf.h
           test -f kernel/bpf/sysfs_btf.c
+          test -f include/linux/sukisu_4_19_compat.h
 
       - name: Build kernel
         env:
@@ -101,14 +103,12 @@ jobs:
           set -o pipefail
           chmod +x build-miui.sh
 
-          # Do not pass the function-like MODULE_IMPORT_NS(x) definition via
-          # MAKEFLAGS: GNU make reparses MAKEFLAGS and drops the escaping,
-          # causing /bin/sh to treat '(' as syntax. Pass the escaped compiler
-          # flags directly instead so the recipe shell receives literal parens.
-          unset MAKEFLAGS
-          export KCFLAGS='-DMODULE_IMPORT_NS\(x\)= -DTWA_RESUME=1'
-          export KCPPFLAGS='-include linux/sched/task.h'
-          echo "KCFLAGS: $KCFLAGS"
+          # Keep the forced include dependency-free. The previous global
+          # linux/sched/task.h include raced generated/timeconst.h creation.
+          # TWA_RESUME is already provided by this tree's task_work.h; only
+          # MODULE_IMPORT_NS needs a Linux 4.19 no-op compatibility shim.
+          unset MAKEFLAGS KCFLAGS KCPPFLAGS
+          export KCPPFLAGS='-include linux/sukisu_4_19_compat.h'
           echo "KCPPFLAGS: $KCPPFLAGS"
 
           bash build-miui.sh alioth ksu 2>&1 | tee scene-ebpf-build.log
