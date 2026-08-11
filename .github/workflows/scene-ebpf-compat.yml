@@ -101,13 +101,15 @@ jobs:
           set -o pipefail
           chmod +x build-miui.sh
 
-          # SukiSU v4.1.2 references APIs/macros introduced after this 4.19
-          # tree. Keep the same compatibility flags used by the branch's
-          # regular kernel workflow so Scene CI tests eBPF rather than failing
-          # first on the unrelated MODULE_IMPORT_NS/TWA compatibility layer.
-          unset KCFLAGS KCPPFLAGS
-          export MAKEFLAGS='KCFLAGS=-DMODULE_IMPORT_NS\(x\)=\ -DTWA_RESUME=1 KCPPFLAGS=-include\ linux/sched/task.h'
-          echo "MAKEFLAGS: $MAKEFLAGS"
+          # Do not pass the function-like MODULE_IMPORT_NS(x) definition via
+          # MAKEFLAGS: GNU make reparses MAKEFLAGS and drops the escaping,
+          # causing /bin/sh to treat '(' as syntax. Pass the escaped compiler
+          # flags directly instead so the recipe shell receives literal parens.
+          unset MAKEFLAGS
+          export KCFLAGS='-DMODULE_IMPORT_NS\(x\)= -DTWA_RESUME=1'
+          export KCPPFLAGS='-include linux/sched/task.h'
+          echo "KCFLAGS: $KCFLAGS"
+          echo "KCPPFLAGS: $KCPPFLAGS"
 
           bash build-miui.sh alioth ksu 2>&1 | tee scene-ebpf-build.log
 
