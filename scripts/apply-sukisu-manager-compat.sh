@@ -6,8 +6,8 @@ set -euo pipefail
 # This script intentionally does NOT apply the v2/v3 -> v4 ABI migration used
 # by SukiSU v4.1.3. It supplies the SUSFS Kconfig symbols already backed by
 # this kernel tree, pins the build-time version banner to v4.1.2, performs an
-# initial manager APK scan at post-fs-data, and adapts newer seccomp source to
-# the Linux 4.19 struct seccomp layout.
+# initial manager APK scan at post-fs-data, and adapts newer seccomp/fsnotify
+# source to the Linux 4.19 APIs.
 
 die() {
     printf 'error: %s\n' "$*" >&2
@@ -30,8 +30,9 @@ KBUILD="$KSU_DIR/kernel/Kbuild"
 KSUD="$KSU_DIR/kernel/ksud.c"
 APP_PROFILE="$KSU_DIR/kernel/app_profile.h"
 APP_PROFILE_C="$KSU_DIR/kernel/app_profile.c"
+PKG_OBSERVER="$KSU_DIR/kernel/pkg_observer.c"
 
-for file in "$KCONFIG" "$KBUILD" "$KSUD" "$APP_PROFILE" "$APP_PROFILE_C"; do
+for file in "$KCONFIG" "$KBUILD" "$KSUD" "$APP_PROFILE" "$APP_PROFILE_C" "$PKG_OBSERVER"; do
     [[ -f "$file" ]] || die "missing $file"
 done
 
@@ -227,12 +228,81 @@ PY
     echo "Patched Linux 4.19 seccomp layout in: $APP_PROFILE_C"
 }
 
+patch_pkg_observer_fsnotify_419() {
+    if grep -q 'SUKISU_V412_FSNOTIFY_419_COMPAT' "$PKG_OBSERVER"; then
+        echo "Linux 4.19 fsnotify compatibility is already applied."
+        return 0
+    fi
+
+    python3 - "$PKG_OBSERVER" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+old = '''static int ksu_handle_inode_event(struct fsnotify_mark *mark, u32 mask,
+                                  struct inode *inode, struct inode *dir,
+                                  const struct qstr *file_name, u32 cookie)
+{
+    if (!file_name)
+        return 0;
+    if (mask & FS_ISDIR)
+        return 0;
+    if (file_name->len == 13 && !memcmp(file_name->name, "packages.list", 13)) {
+        pr_info("packages.list detected: %d\\n", mask);
+        track_throne(false);
+    }
+    return 0;
+}
+
+static const struct fsnotify_ops ksu_ops = {
+    .handle_inode_event = ksu_handle_inode_event,
+};'''
+new = '''/* SUKISU_V412_FSNOTIFY_419_COMPAT
+ * Linux 4.19 fsnotify_ops uses the legacy group-level handle_event callback.
+ * This observer only needs the child filename and mask, both of which are
+ * supplied directly by the old API, so no semantic behavior is lost here.
+ */
+static int ksu_handle_event_419(struct fsnotify_group *group,
+                                struct inode *inode, u32 mask,
+                                const void *data, int data_type,
+                                const unsigned char *file_name, u32 cookie,
+                                struct fsnotify_iter_info *iter_info)
+{
+    if (!file_name)
+        return 0;
+    if (mask & FS_ISDIR)
+        return 0;
+    if (!strcmp((const char *)file_name, "packages.list")) {
+        pr_info("packages.list detected: %d\\n", mask);
+        track_throne(false);
+    }
+    return 0;
+}
+
+static const struct fsnotify_ops ksu_ops = {
+    .handle_event = ksu_handle_event_419,
+};'''
+if text.count(old) != 1:
+    raise SystemExit("expected one SukiSU handle_inode_event/fsnotify_ops block")
+path.write_text(text.replace(old, new, 1), encoding="utf-8")
+PY
+
+    grep -q 'SUKISU_V412_FSNOTIFY_419_COMPAT' "$PKG_OBSERVER" || die "fsnotify compatibility marker was not written"
+    grep -q '\.handle_event = ksu_handle_event_419' "$PKG_OBSERVER" || die "legacy fsnotify handle_event was not installed"
+    if grep -q '\.handle_inode_event' "$PKG_OBSERVER"; then
+        die "unsupported handle_inode_event reference remains"
+    fi
+    echo "Patched Linux 4.19 fsnotify observer API in: $PKG_OBSERVER"
+}
+
 ensure_susfs_kconfig
 pin_version_banner
 patch_initial_manager_scan
 patch_seccomp_filter_count_419
+patch_pkg_observer_fsnotify_419
 
-git -C "$KSU_DIR" diff --check -- kernel/Kconfig kernel/Kbuild kernel/ksud.c kernel/app_profile.c
+git -C "$KSU_DIR" diff --check -- kernel/Kconfig kernel/Kbuild kernel/ksud.c kernel/app_profile.c kernel/pkg_observer.c
 
 echo
 echo "SukiSU-Ultra v4.1.2 compatibility applied successfully."
@@ -241,4 +311,4 @@ echo "Exact source tag : $ACTUAL_TAG"
 echo "Source commit    : $(git -C "$KSU_DIR" rev-parse --short=8 HEAD)"
 echo "App-profile ABI  : v$PROFILE_VER"
 echo "Changed files:"
-git -C "$KSU_DIR" diff --name-only -- kernel/Kconfig kernel/Kbuild kernel/ksud.c kernel/app_profile.c
+git -C "$KSU_DIR" diff --name-only -- kernel/Kconfig kernel/Kbuild kernel/ksud.c kernel/app_profile.c kernel/pkg_observer.c
