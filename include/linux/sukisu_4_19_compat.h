@@ -18,6 +18,12 @@
  * helper unconditionally. Linux 4.19 has no seccomp action cache to update, so
  * the correct compatibility behavior is a no-op.
  *
+ * SukiSU v4.1.2 also includes <uapi/linux/mount.h> from su_mount_ns.c even
+ * though it only consumes legacy MS_PRIVATE/MS_REC flags already available in
+ * this 4.19 tree. A deliberately empty include/uapi/linux/mount.h shim is kept
+ * alongside this header so the newer source can include it without importing
+ * unsupported new mount API definitions.
+ *
  * Keep this header intentionally dependency-free: it is force-included by
  * KCPPFLAGS during the build, including very early host/kernel objects before
  * generated headers such as generated/timeconst.h exist.
