@@ -100,6 +100,15 @@ jobs:
         run: |
           set -o pipefail
           chmod +x build-miui.sh
+
+          # SukiSU v4.1.2 references APIs/macros introduced after this 4.19
+          # tree. Keep the same compatibility flags used by the branch's
+          # regular kernel workflow so Scene CI tests eBPF rather than failing
+          # first on the unrelated MODULE_IMPORT_NS/TWA compatibility layer.
+          unset KCFLAGS KCPPFLAGS
+          export MAKEFLAGS='KCFLAGS=-DMODULE_IMPORT_NS\(x\)=\ -DTWA_RESUME=1 KCPPFLAGS=-include\ linux/sched/task.h'
+          echo "MAKEFLAGS: $MAKEFLAGS"
+
           bash build-miui.sh alioth ksu 2>&1 | tee scene-ebpf-build.log
 
       - name: Verify effective Scene eBPF support
@@ -139,10 +148,18 @@ jobs:
           "$OBJCOPY" --dump-section .BTF=out/vmlinux.btf out/vmlinux
           test -s out/vmlinux.btf
 
+          # Scene's loader probes bind/getsockname (and close for cleanup).
+          # Require at least one arm64/direct syscall symbol for each operation.
+          NM="$HOME/zyc-clang/bin/llvm-nm"
+          "$NM" out/vmlinux | grep -Eq '[[:space:]](__sys_bind|__arm64_sys_bind)$'
+          "$NM" out/vmlinux | grep -Eq '[[:space:]](__sys_getsockname|__arm64_sys_getsockname)$'
+          "$NM" out/vmlinux | grep -Eq '[[:space:]](__sys_close|__arm64_sys_close)$'
+
           echo '============================================================'
           echo 'PASS: compile-time Scene eBPF requirements are present.'
           echo 'PASS: cgroup connect4/connect6 + bind4/bind6 UAPI exists.'
           echo 'PASS: kprobe/perf BPF events are enabled.'
+          echo 'PASS: bind/getsockname/close kprobe target symbols exist.'
           echo 'PASS: out/vmlinux contains .BTF and raw BTF was extracted.'
           echo '============================================================'
           ls -lh out/vmlinux out/vmlinux.btf out/arch/arm64/boot/Image
