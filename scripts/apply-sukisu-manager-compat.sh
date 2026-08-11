@@ -164,9 +164,9 @@ line='    p->ops.iopoll = fp->f_op->iopoll ? ksu_wrapper_iopoll : NULL;\n'
 if t.count(line)!=1: raise SystemExit('iopoll assignment mismatch')
 t=t.replace(line,'',1)
 
-# remap_file_range/REMAP_FILE_DEDUP arrived after this vendor 4.19 VFS.
+# The newer remap callback is not present in this vendor 4.19 VFS.
 pat=r'static loff_t ksu_wrapper_remap_file_range\(.*?\n}\n\n(?=static int ksu_wrapper_fadvise)'
-t,n=re.subn(pat,'/* Linux 4.19: no file_operations.remap_file_range / REMAP_FILE_DEDUP. */\n\n',t,count=1,flags=re.S)
+t,n=re.subn(pat,'/* Linux 4.19: newer file remap callback is unavailable. */\n\n',t,count=1,flags=re.S)
 if n!=1: raise SystemExit('remap_file_range wrapper block mismatch')
 assign='''    p->ops.remap_file_range =\n        fp->f_op->remap_file_range ? ksu_wrapper_remap_file_range : NULL;\n'''
 if t.count(assign)!=1: raise SystemExit('remap_file_range assignment mismatch')
