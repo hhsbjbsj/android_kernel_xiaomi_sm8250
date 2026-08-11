@@ -1,0 +1,161 @@
+name: Scene eBPF Compatibility Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - scene-ebpf-support
+    paths:
+      - '.github/workflows/scene-ebpf-compat.yml'
+      - 'arch/arm64/configs/alioth_defconfig'
+      - 'kernel/bpf/**'
+      - 'kernel/trace/**'
+      - 'include/uapi/linux/bpf.h'
+      - 'scripts/link-vmlinux.sh'
+      - 'build-miui.sh'
+
+jobs:
+  scene-ebpf-compat:
+    name: alioth / MIUI / SukiSU / Scene eBPF
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+
+    steps:
+      - name: Checkout scene-ebpf-support
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+          df -h
+
+      - name: Install build and BTF dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential git curl wget bison flex zip bc cpio \
+            libssl-dev libelf-dev zlib1g-dev ccache python-is-python3 \
+            dwarves
+          pahole --version
+
+      - name: Restore ccache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ccache_mikernel
+          key: scene-ebpf-alioth-${{ github.run_id }}
+          restore-keys: |
+            scene-ebpf-alioth-
+            kernel-ccache-alioth-
+            kernel-ccache-
+
+      - name: Setup ZyC Clang 16
+        run: |
+          mkdir -p "$HOME/zyc-clang"
+          cd "$HOME/zyc-clang"
+          wget -q https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260510-release/Clang-16.0.6-20260510.tar.gz
+          tar -xzf Clang-16.0.6-20260510.tar.gz
+          "$HOME/zyc-clang/bin/clang" --version
+
+      - name: Force Scene eBPF kernel requirements
+        run: |
+          set -euxo pipefail
+          DEFCONFIG=arch/arm64/configs/alioth_defconfig
+          test -f "$DEFCONFIG"
+
+          scripts/config --file "$DEFCONFIG" \
+            -e BPF \
+            -e BPF_SYSCALL \
+            -e BPF_JIT \
+            -e BPF_JIT_ALWAYS_ON \
+            -e CGROUPS \
+            -e CGROUP_BPF \
+            -e PERF_EVENTS \
+            -e KPROBES \
+            -e KPROBE_EVENTS \
+            -e BPF_EVENTS \
+            -e DEBUG_KERNEL \
+            -e DEBUG_INFO \
+            -d DEBUG_INFO_REDUCED \
+            -d DEBUG_INFO_SPLIT \
+            -e DEBUG_INFO_DWARF4 \
+            -e DEBUG_INFO_BTF \
+            -e SYSFS \
+            -e KALLSYMS \
+            -e KALLSYMS_ALL
+
+          echo 'Requested Scene eBPF options:'
+          grep -E '^CONFIG_(BPF|BPF_SYSCALL|BPF_JIT|BPF_JIT_ALWAYS_ON|CGROUPS|CGROUP_BPF|PERF_EVENTS|KPROBES|KPROBE_EVENTS|BPF_EVENTS|DEBUG_KERNEL|DEBUG_INFO|DEBUG_INFO_DWARF4|DEBUG_INFO_BTF|SYSFS|KALLSYMS|KALLSYMS_ALL)=' "$DEFCONFIG" | sort
+
+          grep -q 'BPF_CGROUP_INET4_CONNECT' include/uapi/linux/bpf.h
+          grep -q 'BPF_CGROUP_INET6_CONNECT' include/uapi/linux/bpf.h
+          grep -q 'BPF_CGROUP_INET4_BIND' include/uapi/linux/bpf.h
+          grep -q 'BPF_CGROUP_INET6_BIND' include/uapi/linux/bpf.h
+          test -f kernel/bpf/sysfs_btf.c
+
+      - name: Build kernel
+        env:
+          PAHOLE: pahole
+        run: |
+          set -o pipefail
+          chmod +x build-miui.sh
+          bash build-miui.sh alioth ksu 2>&1 | tee scene-ebpf-build.log
+
+      - name: Verify effective Scene eBPF support
+        run: |
+          set -euxo pipefail
+          test -s out/.config
+          test -s out/vmlinux
+          test -s out/arch/arm64/boot/Image
+
+          required=(
+            CONFIG_BPF_SYSCALL
+            CONFIG_BPF_JIT
+            CONFIG_BPF_JIT_ALWAYS_ON
+            CONFIG_CGROUP_BPF
+            CONFIG_PERF_EVENTS
+            CONFIG_KPROBES
+            CONFIG_KPROBE_EVENTS
+            CONFIG_BPF_EVENTS
+            CONFIG_DEBUG_INFO
+            CONFIG_DEBUG_INFO_BTF
+            CONFIG_SYSFS
+          )
+
+          for opt in "${required[@]}"; do
+            if ! grep -qx "${opt}=y" out/.config; then
+              echo "FATAL: ${opt}=y missing from effective out/.config"
+              grep -E "^${opt}=|^# ${opt} is not set" out/.config || true
+              exit 1
+            fi
+          done
+
+          READELF="$HOME/zyc-clang/bin/llvm-readelf"
+          OBJCOPY="$HOME/zyc-clang/bin/llvm-objcopy"
+          "$READELF" -S out/vmlinux | tee out/vmlinux.sections.txt
+          "$READELF" -S out/vmlinux | grep -qE '[[:space:]]\.BTF[[:space:]]'
+
+          "$OBJCOPY" --dump-section .BTF=out/vmlinux.btf out/vmlinux
+          test -s out/vmlinux.btf
+
+          echo '============================================================'
+          echo 'PASS: compile-time Scene eBPF requirements are present.'
+          echo 'PASS: cgroup connect4/connect6 + bind4/bind6 UAPI exists.'
+          echo 'PASS: kprobe/perf BPF events are enabled.'
+          echo 'PASS: out/vmlinux contains .BTF and raw BTF was extracted.'
+          echo '============================================================'
+          ls -lh out/vmlinux out/vmlinux.btf out/arch/arm64/boot/Image
+
+      - name: Upload Scene compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: Scene-eBPF-compat-${{ github.run_number }}
+          if-no-files-found: warn
+          path: |
+            scene-ebpf-build.log
+            out/.config
+            out/vmlinux.sections.txt
+            out/vmlinux.btf
+            ./*.zip
