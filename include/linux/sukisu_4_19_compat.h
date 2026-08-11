@@ -13,6 +13,11 @@
  * newer source buildable; the old kernel still has no clone3 syscall-table
  * entry, so this case is never observed at runtime.
  *
+ * SukiSU's seccomp action-cache helpers are only declared/implemented for
+ * kernels >= 5.10.2. Its v4.1.2 setuid hook nevertheless calls the allow-cache
+ * helper unconditionally. Linux 4.19 has no seccomp action cache to update, so
+ * the correct compatibility behavior is a no-op.
+ *
  * Keep this header intentionally dependency-free: it is force-included by
  * KCPPFLAGS during the build, including very early host/kernel objects before
  * generated headers such as generated/timeconst.h exist.
@@ -23,6 +28,14 @@
 
 #ifndef __NR_clone3
 #define __NR_clone3 435
+#endif
+
+#ifndef ksu_seccomp_allow_cache
+#define ksu_seccomp_allow_cache(filter, nr) do { } while (0)
+#endif
+
+#ifndef ksu_seccomp_clear_cache
+#define ksu_seccomp_clear_cache(filter, nr) do { } while (0)
 #endif
 
 #endif /* _LINUX_SUKISU_4_19_COMPAT_H */
