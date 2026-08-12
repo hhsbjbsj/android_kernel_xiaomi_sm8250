@@ -13,6 +13,7 @@ on:
       - 'include/uapi/linux/bpf.h'
       - 'include/linux/sukisu_4_19_compat.h'
       - 'scripts/apply-sukisu-manager-compat.sh'
+      - 'scripts/apply-sukisu-selinux-4.19-compat.sh'
       - 'scripts/link-vmlinux.sh'
       - 'build-miui.sh'
 
@@ -103,6 +104,20 @@ jobs:
         run: |
           set -o pipefail
           chmod +x build-miui.sh
+
+          # build-miui.sh clones the pinned SukiSU source at runtime and then
+          # invokes the existing v4.1.2 compatibility script. Add the legacy
+          # Android/Linux 4.19 SELinux policydb conversion immediately after it.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('build-miui.sh')
+          text = p.read_text()
+          old = '    bash "$COMPAT_SCRIPT" "$KSU_DIR"\n'
+          new = old + '    bash "$SCRIPT_DIR/scripts/apply-sukisu-selinux-4.19-compat.sh" "$KSU_DIR"\n'
+          if text.count(old) != 1:
+              raise SystemExit('could not locate SukiSU compatibility hook in build-miui.sh')
+          p.write_text(text.replace(old, new, 1))
+          PY
 
           # Keep the forced include dependency-free. The previous global
           # linux/sched/task.h include raced generated/timeconst.h creation.
