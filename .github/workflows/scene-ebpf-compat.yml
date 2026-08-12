@@ -107,6 +107,41 @@ jobs:
           set -o pipefail
           chmod +x build-miui.sh
 
+          # This tree carries an old direct sys_read KernelSU init-rc hook. The
+          # pinned SukiSU v4.1.2 no longer exports those two symbols, so keeping
+          # the stale call makes final vmlinux linkage fail. Remove the call,
+          # rather than supplying fake stub symbols; SukiSU itself remains on.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('fs/read_write.c')
+          text = p.read_text()
+          old = '''#ifdef CONFIG_KSU
+          extern struct static_key_true ksu_is_init_rc_hook_enabled;
+          extern __attribute__((cold)) int ksu_handle_sys_read(unsigned int fd);
+          #endif
+          SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
+          {
+          #ifdef CONFIG_KSU
+          \tif (static_branch_unlikely(&ksu_is_init_rc_hook_enabled))
+          \t\tksu_handle_sys_read(fd);
+          #endif
+          \treturn ksys_read(fd, buf, count);
+          }
+          '''
+          # YAML block indentation is stripped before the shell sees this
+          # heredoc; normalize the Python literal's visual indentation too.
+          old = '\n'.join(line[10:] if line.startswith('          ') else line for line in old.splitlines()) + '\n'
+          new = '''SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
+          {
+          \treturn ksys_read(fd, buf, count);
+          }
+          '''
+          new = '\n'.join(line[10:] if line.startswith('          ') else line for line in new.splitlines()) + '\n'
+          if text.count(old) != 1:
+              raise SystemExit('legacy KernelSU sys_read hook layout changed')
+          p.write_text(text.replace(old, new, 1))
+          PY
+
           # Patch only this CI copy of build-miui.sh. Keep SukiSU enabled, add
           # Linux 4.19 API adapters, and disable the legacy SUSFS hook ABI that
           # is not part of Scene's acceptance contract.
