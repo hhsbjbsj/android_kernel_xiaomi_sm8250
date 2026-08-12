@@ -107,77 +107,36 @@ jobs:
           set -o pipefail
           chmod +x build-miui.sh
 
-          # build-miui.sh clones pinned SukiSU at runtime. Chain the exact
-          # Linux 4.19 adaptations after the base v4.1.2 compatibility patch.
-          # This Scene target deliberately disables the tree's legacy SUSFS
-          # hook ABI: SukiSU v4.1.2 no longer provides those old hook symbols,
-          # and SUSFS is not part of the Scene eBPF acceptance contract.
+          # Patch only this CI copy of build-miui.sh. Keep SukiSU enabled, add
+          # Linux 4.19 API adapters, and disable the legacy SUSFS hook ABI that
+          # is not part of Scene's acceptance contract.
           python3 - <<'PY'
           from pathlib import Path
           p = Path('build-miui.sh')
           text = p.read_text()
-
           old = '    bash "$COMPAT_SCRIPT" "$KSU_DIR"\n'
-          new = (old
-                 + '    bash "$SCRIPT_DIR/scripts/apply-sukisu-selinux-4.19-compat.sh" "$KSU_DIR"\n'
-                 + '    bash "$SCRIPT_DIR/scripts/apply-sukisu-rules-4.19-compat.sh" "$KSU_DIR"\n'
-                 + '    bash "$SCRIPT_DIR/scripts/apply-sukisu-link-4.19-compat.sh" "$KSU_DIR"\n')
+          new = old + '    bash "$SCRIPT_DIR/scripts/apply-sukisu-selinux-4.19-compat.sh" "$KSU_DIR"\n' + '    bash "$SCRIPT_DIR/scripts/apply-sukisu-rules-4.19-compat.sh" "$KSU_DIR"\n' + '    bash "$SCRIPT_DIR/scripts/apply-sukisu-link-4.19-compat.sh" "$KSU_DIR"\n'
           if text.count(old) != 1:
               raise SystemExit('could not locate SukiSU compatibility hook in build-miui.sh')
           text = text.replace(old, new, 1)
-
-          susfs_enable = '''    -e KSU_SUSFS \\
-    -e KSU_SUSFS_SUS_PATH \\
-    -e KSU_SUSFS_SUS_MOUNT \\
-    -e KSU_SUSFS_SUS_KSTAT \\
-    -e KSU_SUSFS_SPOOF_UNAME \\
-    -e KSU_SUSFS_ENABLE_LOG \\
-    -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \\
-    -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \\
-    -e KSU_SUSFS_OPEN_REDIRECT \\
-    -e KSU_SUSFS_SUS_MAP\n'''
-          susfs_disable = '''    -d KSU_SUSFS \\
-    -d KSU_SUSFS_SUS_PATH \\
-    -d KSU_SUSFS_SUS_MOUNT \\
-    -d KSU_SUSFS_SUS_KSTAT \\
-    -d KSU_SUSFS_SPOOF_UNAME \\
-    -d KSU_SUSFS_ENABLE_LOG \\
-    -d KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \\
-    -d KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \\
-    -d KSU_SUSFS_OPEN_REDIRECT \\
-    -d KSU_SUSFS_SUS_MAP\n'''
-          if text.count(susfs_enable) != 1:
-              raise SystemExit('could not locate SUSFS config block')
-          text = text.replace(susfs_enable, susfs_disable, 1)
-
+          symbols = ['KSU_SUSFS','KSU_SUSFS_SUS_PATH','KSU_SUSFS_SUS_MOUNT','KSU_SUSFS_SUS_KSTAT','KSU_SUSFS_SPOOF_UNAME','KSU_SUSFS_ENABLE_LOG','KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS','KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG','KSU_SUSFS_OPEN_REDIRECT','KSU_SUSFS_SUS_MAP']
+          for sym in symbols:
+              old_opt = '    -e ' + sym
+              if old_opt not in text:
+                  raise SystemExit('could not locate SUSFS option ' + sym)
+              text = text.replace(old_opt, '    -d ' + sym, 1)
           old_required = '    for required_option in CONFIG_KPROBES CONFIG_EXT4_FS CONFIG_KSU CONFIG_KSU_SUSFS; do\n'
-          new_required = '    for required_option in CONFIG_KPROBES CONFIG_EXT4_FS CONFIG_KSU; do\n'
           if text.count(old_required) != 1:
               raise SystemExit('could not locate SukiSU required-option loop')
-          text = text.replace(old_required, new_required, 1)
-
-          old_post = '''if [ "$KSU_ENABLE" -eq 1 ]; then
-    if ! find out -type f -path '*/fs/susfs.o' -size +0c -print -quit | grep -q .; then
-        echo "Error: fs/susfs.o was not built although CONFIG_KSU_SUSFS=y was requested."
-        exit 1
-    fi
-
-    echo "Verified: SukiSU and SUSFS are compiled into this kernel build."
-fi
-'''
-          new_post = '''if [ "$KSU_ENABLE" -eq 1 ]; then
-    echo "Verified: SukiSU is compiled into this Scene eBPF kernel build."
-fi
-'''
-          if text.count(old_post) != 1:
-              raise SystemExit('could not locate post-build SUSFS assertion')
-          text = text.replace(old_post, new_post, 1)
-
+          text = text.replace(old_required, '    for required_option in CONFIG_KPROBES CONFIG_EXT4_FS CONFIG_KSU; do\n', 1)
+          old_check = "    if ! find out -type f -path '*/fs/susfs.o' -size +0c -print -quit | grep -q .; then\n"
+          if text.count(old_check) != 1:
+              raise SystemExit('could not locate post-build SUSFS object check')
+          text = text.replace(old_check, '    if false; then\n', 1)
+          text = text.replace('    echo "Verified: SukiSU and SUSFS are compiled into this kernel build."\n', '    echo "Verified: SukiSU is compiled into this Scene eBPF kernel build."\n', 1)
           p.write_text(text)
           PY
 
-          # Keep the forced include dependency-free. The previous global
-          # linux/sched/task.h include raced generated/timeconst.h creation.
           unset MAKEFLAGS KCFLAGS KCPPFLAGS
           export KCPPFLAGS='-include linux/sukisu_4_19_compat.h'
           echo "KCPPFLAGS: $KCPPFLAGS"
@@ -221,7 +180,6 @@ fi
           "$OBJCOPY" --dump-section .BTF=out/vmlinux.btf out/vmlinux
           test -s out/vmlinux.btf
 
-          # Scene's loader probes bind/getsockname (and close for cleanup).
           NM="$HOME/zyc-clang/bin/llvm-nm"
           "$NM" out/vmlinux | grep -Eq '[[:space:]](__sys_bind|__arm64_sys_bind)$'
           "$NM" out/vmlinux | grep -Eq '[[:space:]](__sys_getsockname|__arm64_sys_getsockname)$'
