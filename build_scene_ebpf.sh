@@ -75,6 +75,10 @@ if [[ ! -f "$OUT/kernel/bpf/sysfs_btf.o" ]]; then
   echo "[!] sysfs_btf.o was not built" >&2
   exit 1
 fi
+if [[ ! -f "$OUT/kernel/trace/bpf_trace.o" ]]; then
+  echo "[!] bpf_trace.o was not built" >&2
+  exit 1
+fi
 
 OBJCOPY="${OBJCOPY:-$HOME/zyc-clang/bin/llvm-objcopy}"
 READELF="${READELF:-$HOME/zyc-clang/bin/llvm-readelf}"
@@ -86,10 +90,13 @@ if [[ -z "$OBJCOPY" || -z "$READELF" ]]; then
   exit 1
 fi
 
-"$READELF" -S "$VMLINUX" | grep -q '\.BTF' || {
+SECTIONS="$OUT/vmlinux.sections.txt"
+"$READELF" -S "$VMLINUX" > "$SECTIONS"
+if ! grep -q '\.BTF' "$SECTIONS"; then
   echo "[!] Final vmlinux has no .BTF section" >&2
   exit 1
-}
+fi
+
 "$OBJCOPY" --dump-section .BTF="$OUT/vmlinux.btf" "$VMLINUX"
 test -s "$OUT/vmlinux.btf"
 
