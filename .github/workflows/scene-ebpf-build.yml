@@ -53,28 +53,6 @@ jobs:
           tar -xzf Clang-16.0.6-20260510.tar.gz
           "$HOME/zyc-clang/bin/clang" --version
 
-      - name: Enable Scene eBPF kernel capabilities
-        run: |
-          CFG="arch/arm64/configs/${DEVICE}_defconfig"
-          test -f "$CFG"
-
-          # Keep this CI change isolated: build_kernel.sh will consume this
-          # defconfig and then run olddefconfig to resolve dependencies.
-          cat >> "$CFG" <<'EOF'
-          CONFIG_DEBUG_INFO=y
-          CONFIG_DEBUG_INFO_BTF=y
-          CONFIG_KPROBES=y
-          CONFIG_KPROBE_EVENTS=y
-          CONFIG_PERF_EVENTS=y
-          CONFIG_BPF_EVENTS=y
-          CONFIG_BPF_SYSCALL=y
-          CONFIG_CGROUP_BPF=y
-          CONFIG_BPF_JIT=y
-          EOF
-
-          echo "=== requested Scene eBPF config ==="
-          grep -E '^CONFIG_(DEBUG_INFO|DEBUG_INFO_BTF|KPROBES|KPROBE_EVENTS|PERF_EVENTS|BPF_EVENTS|BPF_SYSCALL|CGROUP_BPF|BPF_JIT)=' "$CFG" | tail -n 20
-
       - name: Static capability audit
         run: |
           set -eux
@@ -90,42 +68,10 @@ jobs:
           grep -q 'BPF_CGROUP_INET4_CONNECT' include/uapi/linux/bpf.h
           grep -q 'BPF_CGROUP_INET6_CONNECT' include/uapi/linux/bpf.h
 
-      - name: Build kernel
+      - name: Build and validate Scene eBPF kernel capabilities
         run: |
-          chmod +x build_kernel.sh
-          ./build_kernel.sh "$DEVICE" "$TARGET_OS"
-
-      - name: Verify final kernel capabilities
-        run: |
-          set -euxo pipefail
-          OUT="out_${TARGET_OS}"
-          CFG="$OUT/.config"
-          test -f "$CFG"
-
-          for opt in \
-            CONFIG_DEBUG_INFO \
-            CONFIG_DEBUG_INFO_BTF \
-            CONFIG_KPROBES \
-            CONFIG_KPROBE_EVENTS \
-            CONFIG_PERF_EVENTS \
-            CONFIG_BPF_EVENTS \
-            CONFIG_BPF_SYSCALL \
-            CONFIG_CGROUP_BPF \
-            CONFIG_BPF_JIT; do
-            grep -qx "${opt}=y" "$CFG" || { echo "MISSING: $opt"; exit 1; }
-          done
-
-          test -f "$OUT/kernel/bpf/sysfs_btf.o"
-          test -f "$OUT/kernel/trace/bpf_trace.o"
-          test -s "$OUT/vmlinux"
-
-          OBJCOPY="$HOME/zyc-clang/bin/llvm-objcopy"
-          READELF="$HOME/zyc-clang/bin/llvm-readelf"
-          "$READELF" -S "$OUT/vmlinux" | tee "$OUT/vmlinux.sections.txt"
-          "$READELF" -S "$OUT/vmlinux" | grep -q '\.BTF'
-          "$OBJCOPY" --dump-section .BTF="$OUT/vmlinux.btf" "$OUT/vmlinux"
-          test -s "$OUT/vmlinux.btf"
-          ls -lh "$OUT/vmlinux.btf" "$OUT/kernel/bpf/sysfs_btf.o"
+          chmod +x build_scene_ebpf.sh build_kernel.sh
+          ./build_scene_ebpf.sh "$DEVICE" "$TARGET_OS"
 
       - name: Upload validation artifacts
         uses: actions/upload-artifact@v4
