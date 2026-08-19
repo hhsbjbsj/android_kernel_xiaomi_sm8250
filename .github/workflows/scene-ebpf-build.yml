@@ -150,3 +150,5 @@ jobs:
             out_${{ env.TARGET_OS }}/.config
             out_${{ env.TARGET_OS }}/vmlinux.btf
             out_${{ env.TARGET_OS }}/vmlinux.sections.txt
+
+# manual retrigger: 2026-08-19T18:35+08:00
