@@ -69,11 +69,38 @@ jobs:
           grep -q 'BPF_CGROUP_INET6_CONNECT' include/uapi/linux/bpf.h
 
       - name: Build and validate Scene eBPF kernel capabilities
+        shell: bash
         run: |
+          set -o pipefail
           chmod +x build_scene_ebpf.sh build_kernel.sh
-          ./build_scene_ebpf.sh "$DEVICE" "$TARGET_OS"
+          LOG_FILE="$GITHUB_WORKSPACE/scene-ebpf-build.log"
+          echo "===== Scene eBPF raw build log =====" | tee "$LOG_FILE"
+          echo "run_id=${GITHUB_RUN_ID} sha=${GITHUB_SHA} device=${DEVICE} target_os=${TARGET_OS}" | tee -a "$LOG_FILE"
+          ./build_scene_ebpf.sh "$DEVICE" "$TARGET_OS" 2>&1 | tee -a "$LOG_FILE"
+          BUILD_RC=${PIPESTATUS[0]}
+          echo "===== build exit code: ${BUILD_RC} =====" | tee -a "$LOG_FILE"
+          exit "$BUILD_RC"
+
+      - name: Upload raw build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Scene-eBPF-raw-log-${{ env.DEVICE }}-${{ env.TARGET_OS }}-${{ github.run_id }}
+          if-no-files-found: warn
+          compression-level: 0
+          path: scene-ebpf-build.log
+
+      - name: Print failure tail
+        if: failure()
+        shell: bash
+        run: |
+          echo '===== LAST 300 LINES OF RAW BUILD LOG ====='
+          tail -n 300 scene-ebpf-build.log || true
+          echo '===== FIRST ERROR-LIKE LINES ====='
+          grep -nEi -m 80 '(^|[[:space:]])(error:|fatal:|undefined reference|undefined symbol|FAILED:|No such file|BTF|pahole|Error [0-9]+)' scene-ebpf-build.log || true
 
       - name: Upload validation artifacts
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: Scene-eBPF-${{ env.DEVICE }}-${{ env.TARGET_OS }}-${{ github.run_id }}
