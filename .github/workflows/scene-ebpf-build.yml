@@ -42,7 +42,7 @@ jobs:
             bc bison build-essential ccache curl flex gawk git gnupg gperf imagemagick \
             libncurses-dev lib32readline-dev lib32z1-dev liblz4-tool libsdl1.2-dev \
             libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool \
-            squashfs-tools xsltproc zip zlib1g-dev python3 dwarves
+            squashfs-tools xsltproc zip zlib1g-dev python3 dwarves linux-headers-generic
           echo "pahole: $(command -v pahole)"
           pahole --version
 
@@ -77,6 +77,20 @@ jobs:
           LOG_FILE="$GITHUB_WORKSPACE/scene-ebpf-build.log"
           echo "===== Scene eBPF raw build log =====" | tee "$LOG_FILE"
           echo "run_id=${GITHUB_RUN_ID} sha=${GITHUB_SHA} device=${DEVICE} target_os=${TARGET_OS}" | tee -a "$LOG_FILE"
+
+          # This 4.19 tree has the 5.15 BTF-ID link hook but not the host-side
+          # resolve_btfids sources. Jammy's generic 5.15 headers ship the
+          # matching prebuilt host resolver. Point Kbuild at that resolver
+          # instead of the missing objtree/tools/bpf/resolve_btfids binary.
+          RESOLVE_BTFIDS_HOST="$(find /usr/src/linux-headers-* -type f -path '*/tools/bpf/resolve_btfids/resolve_btfids' -perm -111 2>/dev/null | sort -V | tail -n 1)"
+          if [[ -z "$RESOLVE_BTFIDS_HOST" || ! -x "$RESOLVE_BTFIDS_HOST" ]]; then
+            echo "[!] resolve_btfids host tool not found after installing linux-headers-generic" | tee -a "$LOG_FILE"
+            exit 1
+          fi
+          echo "[*] resolve_btfids: $RESOLVE_BTFIDS_HOST" | tee -a "$LOG_FILE"
+          sed -i "s|^RESOLVE_BTFIDS[[:space:]]*=.*|RESOLVE_BTFIDS = $RESOLVE_BTFIDS_HOST|" Makefile
+          grep '^RESOLVE_BTFIDS' Makefile | tee -a "$LOG_FILE"
+
           ./build_scene_ebpf.sh "$DEVICE" "$TARGET_OS" 2>&1 | tee -a "$LOG_FILE"
           BUILD_RC=${PIPESTATUS[0]}
           echo "===== build exit code: ${BUILD_RC} =====" | tee -a "$LOG_FILE"
@@ -150,5 +164,3 @@ jobs:
             out_${{ env.TARGET_OS }}/.config
             out_${{ env.TARGET_OS }}/vmlinux.btf
             out_${{ env.TARGET_OS }}/vmlinux.sections.txt
-
-# manual retrigger: 2026-08-19T18:35+08:00
