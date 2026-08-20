@@ -82,9 +82,9 @@ jobs:
           # resolve_btfids sources. Jammy's generic 5.15 headers ship the
           # matching prebuilt host resolver. Point Kbuild at that resolver
           # instead of the missing objtree/tools/bpf/resolve_btfids binary.
-          RESOLVE_BTFIDS_HOST="$(find /usr/src/linux-headers-* -type f -path '*/tools/bpf/resolve_btfids/resolve_btfids' -perm -111 2>/dev/null | sort -V | tail -n 1)"
+          RESOLVE_BTFIDS_HOST="$(find /usr/src/linux-headers-5.15.*-generic -type f -path '*/tools/bpf/resolve_btfids/resolve_btfids' -perm -111 2>/dev/null | sort -V | tail -n 1)"
           if [[ -z "$RESOLVE_BTFIDS_HOST" || ! -x "$RESOLVE_BTFIDS_HOST" ]]; then
-            echo "[!] resolve_btfids host tool not found after installing linux-headers-generic" | tee -a "$LOG_FILE"
+            echo "[!] 5.15 resolve_btfids host tool not found after installing linux-headers-generic" | tee -a "$LOG_FILE"
             exit 1
           fi
           echo "[*] resolve_btfids: $RESOLVE_BTFIDS_HOST" | tee -a "$LOG_FILE"
