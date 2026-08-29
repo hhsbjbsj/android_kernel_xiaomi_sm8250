@@ -101,39 +101,8 @@ jobs:
                 raise SystemExit('TIF_PROC_UMOUNTED marker missing; SUSFS layout changed')
             text = text.replace(flag_marker, flag_block, 1)
 
-        helper_marker = '''static inline void susfs_set_current_proc_umounted(void) {
-\tset_thread_flag(TIF_PROC_UMOUNTED);
-}
-'''
-        helper_block = helper_marker + '''
-static inline void susfs_clear_current_proc_umounted(void) {
-\tclear_thread_flag(TIF_PROC_UMOUNTED);
-}
-
-static inline bool susfs_is_current_proc_no_su(void) {
-\treturn likely(test_thread_flag(TIF_PROC_NO_SU));
-}
-
-static inline void susfs_set_current_proc_no_su(void) {
-\tset_thread_flag(TIF_PROC_NO_SU);
-}
-
-static inline void susfs_clear_current_proc_no_su(void) {
-\tclear_thread_flag(TIF_PROC_NO_SU);
-}
-
-static inline bool susfs_is_current_proc_umounted_for_zygote_next(void) {
-\treturn likely(test_thread_flag(TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT));
-}
-
-static inline void susfs_set_current_proc_umounted_for_zygote_next(void) {
-\tset_thread_flag(TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT);
-}
-
-static inline void susfs_clear_current_proc_umounted_for_zygote_next(void) {
-\tclear_thread_flag(TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT);
-}
-'''
+        helper_marker = 'static inline void susfs_set_current_proc_umounted(void) {\n\tset_thread_flag(TIF_PROC_UMOUNTED);\n}\n'
+        helper_block = helper_marker + '\nstatic inline void susfs_clear_current_proc_umounted(void) {\n\tclear_thread_flag(TIF_PROC_UMOUNTED);\n}\n\nstatic inline bool susfs_is_current_proc_no_su(void) {\n\treturn likely(test_thread_flag(TIF_PROC_NO_SU));\n}\n\nstatic inline void susfs_set_current_proc_no_su(void) {\n\tset_thread_flag(TIF_PROC_NO_SU);\n}\n\nstatic inline void susfs_clear_current_proc_no_su(void) {\n\tclear_thread_flag(TIF_PROC_NO_SU);\n}\n\nstatic inline bool susfs_is_current_proc_umounted_for_zygote_next(void) {\n\treturn likely(test_thread_flag(TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT));\n}\n\nstatic inline void susfs_set_current_proc_umounted_for_zygote_next(void) {\n\tset_thread_flag(TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT);\n}\n\nstatic inline void susfs_clear_current_proc_umounted_for_zygote_next(void) {\n\tclear_thread_flag(TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT);\n}\n'
         if 'susfs_set_current_proc_no_su' not in text:
             if helper_marker not in text:
                 raise SystemExit('SUSFS helper layout changed; refusing blind patch')
