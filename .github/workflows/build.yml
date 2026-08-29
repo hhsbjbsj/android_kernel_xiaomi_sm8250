@@ -23,7 +23,7 @@ on:
           - thyme
           - umi
       ksu:
-        description: 'Enable KernelSU (ReSukiSU)'
+        description: 'Enable KernelSU (ReSukiSU v4.2.0-rc1)'
         required: true
         type: boolean
         default: true
@@ -75,9 +75,9 @@ jobs:
         wget -q https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260510-release/Clang-16.0.6-20260510.tar.gz
         tar -zxvf Clang-16.0.6-20260510.tar.gz
 
-    - name: Pin ReSukiSU and apply Linux 4.19 compatibility
+    - name: Use ReSukiSU v4.2.0-rc1
       env:
-        RESUKISU_COMMIT: 82c7f72d6486db3edc5deaa321e4acf96febd38e
+        RESUKISU_VERSION: v4.2.0-rc1
       run: |
         python3 - <<'PY'
         from pathlib import Path
@@ -85,35 +85,21 @@ jobs:
         build = Path('build_kernel.sh')
         text = build.read_text()
         old = 'curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash'
-        commit = '82c7f72d6486db3edc5deaa321e4acf96febd38e'
-        new = f'curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/{commit}/kernel/setup.sh" | bash -s -- {commit}'
-        if old not in text and commit not in text:
-            raise SystemExit('ReSukiSU setup command layout changed; refusing blind patch')
+        version = 'v4.2.0-rc1'
+        new = f'curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/{version}/kernel/setup.sh" | bash -s -- {version}'
+
         if old in text:
             build.write_text(text.replace(old, new, 1))
-
-        hdr = Path('include/linux/susfs_def.h')
-        text = hdr.read_text()
-        flag_marker = '#define TIF_PROC_UMOUNTED 33\n'
-        flag_block = '#define TIF_PROC_UMOUNTED 33\n#define TIF_PROC_NO_SU 34\n#define TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT 35\n'
-        if '#define TIF_PROC_NO_SU 34' not in text:
-            if flag_marker not in text:
-                raise SystemExit('TIF_PROC_UMOUNTED marker missing; SUSFS layout changed')
-            text = text.replace(flag_marker, flag_block, 1)
-
-        helper_marker = 'static inline void susfs_set_current_proc_umounted(void) {\n\tset_thread_flag(TIF_PROC_UMOUNTED);\n}\n'
-        helper_block = helper_marker + '\nstatic inline void susfs_clear_current_proc_umounted(void) {\n\tclear_thread_flag(TIF_PROC_UMOUNTED);\n}\n\nstatic inline bool susfs_is_current_proc_no_su(void) {\n\treturn likely(test_thread_flag(TIF_PROC_NO_SU));\n}\n\nstatic inline void susfs_set_current_proc_no_su(void) {\n\tset_thread_flag(TIF_PROC_NO_SU);\n}\n\nstatic inline void susfs_clear_current_proc_no_su(void) {\n\tclear_thread_flag(TIF_PROC_NO_SU);\n}\n\nstatic inline bool susfs_is_current_proc_umounted_for_zygote_next(void) {\n\treturn likely(test_thread_flag(TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT));\n}\n\nstatic inline void susfs_set_current_proc_umounted_for_zygote_next(void) {\n\tset_thread_flag(TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT);\n}\n\nstatic inline void susfs_clear_current_proc_umounted_for_zygote_next(void) {\n\tclear_thread_flag(TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT);\n}\n'
-        if 'susfs_set_current_proc_no_su' not in text:
-            if helper_marker not in text:
-                raise SystemExit('SUSFS helper layout changed; refusing blind patch')
-            text = text.replace(helper_marker, helper_block, 1)
-
-        hdr.write_text(text)
+        elif version not in text:
+            raise SystemExit('ReSukiSU setup command layout changed; refusing blind patch')
         PY
 
-        echo 'KCFLAGS=-DMODULE_IMPORT_NS\(x\)= -DTWA_RESUME=1 -include linux/sched/task.h' >> "$GITHUB_ENV"
-        echo "Pinned ReSukiSU: $RESUKISU_COMMIT"
-        grep -nE 'TIF_PROC_(UMOUNTED|NO_SU)|susfs_(set|clear|is)_current_proc_(no_su|umounted_for_zygote_next)' include/linux/susfs_def.h
+        # Keep only the two narrow 4.19 compatibility defines. Do not globally
+        # force-include sched/task.h: that makes scripts/mod/empty.o depend on
+        # generated/timeconst.h before the generated header exists.
+        echo 'KCFLAGS=-DMODULE_IMPORT_NS\(x\)= -DTWA_RESUME=1' >> "$GITHUB_ENV"
+        echo "ReSukiSU version: $RESUKISU_VERSION"
+        grep -n 'ReSukiSU' build_kernel.sh | head
 
     - name: Run Build Script
       env:
