@@ -26,22 +26,25 @@ on:
         description: 'Enable KernelSU (ReSukiSU)'
         required: true
         type: boolean
-        default: false
+        default: true
       target_os:
         description: 'Target OS (目标系统)'
         required: true
         type: choice
-        default: 'both'
+        default: 'miui'
         options:
           - aosp
           - miui
           - both
+  push:
+    branches:
+      - sync/android16-upstream-20260830
 
 jobs:
   build-kernel:
-    name: Build ${{ github.event.inputs.device }} | KSU:${{ github.event.inputs.ksu }} | OS:${{ github.event.inputs.target_os }}
+    name: Build ${{ github.event.inputs.device || 'lmi' }} | ReSukiSU:${{ github.event.inputs.ksu || 'true' }} | OS:${{ github.event.inputs.target_os || 'miui' }}
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v7
@@ -56,14 +59,14 @@ jobs:
           lib32readline-dev lib32z1-dev liblz4-tool \
           libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync \
           schedtool squashfs-tools xsltproc zip zlib1g-dev python3
-          
+
     - name: Cache ccache
       uses: actions/cache@v6
       with:
         path: ~/.cache/ccache_mikernel
-        key: ${{ runner.os }}-kernel-ccache-${{ github.event.inputs.device }}-${{ github.run_id }}
+        key: ${{ runner.os }}-kernel-ccache-${{ github.event.inputs.device || 'lmi' }}-${{ github.run_id }}
         restore-keys: |
-          ${{ runner.os }}-kernel-ccache-${{ github.event.inputs.device }}-
+          ${{ runner.os }}-kernel-ccache-${{ github.event.inputs.device || 'lmi' }}-
           ${{ runner.os }}-kernel-ccache-
 
     - name: Setup zyc-clang 16 Toolchain
@@ -73,26 +76,101 @@ jobs:
         wget -q https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260510-release/Clang-16.0.6-20260510.tar.gz
         tar -zxvf Clang-16.0.6-20260510.tar.gz
 
+    - name: Pin ReSukiSU and apply Linux 4.19 compatibility
+      env:
+        RESUKISU_COMMIT: 82c7f72d6486db3edc5deaa321e4acf96febd38e
+      run: |
+        python3 - <<'PY'
+        from pathlib import Path
+
+        build = Path('build_kernel.sh')
+        text = build.read_text()
+        old = 'curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash'
+        commit = '82c7f72d6486db3edc5deaa321e4acf96febd38e'
+        new = f'curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/{commit}/kernel/setup.sh" | bash -s -- {commit}'
+        if old not in text and commit not in text:
+            raise SystemExit('ReSukiSU setup command layout changed; refusing blind patch')
+        if old in text:
+            build.write_text(text.replace(old, new, 1))
+
+        hdr = Path('include/linux/susfs_def.h')
+        text = hdr.read_text()
+
+        marker = '#define TIF_PROC_UMOUNTED 33\n'
+        flags = '#define TIF_PROC_UMOUNTED 33\n#define TIF_PROC_NO_SU 34\n#define TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT 35\n'
+        if '#define TIF_PROC_NO_SU 34' not in text:
+            if marker not in text:
+                raise SystemExit('TIF_PROC_UMOUNTED marker missing; SUSFS layout changed')
+            text = text.replace(marker, flags, 1)
+
+        marker = '''static inline void susfs_set_current_proc_umounted(void) {
+\tset_thread_flag(TIF_PROC_UMOUNTED);
+}
+'''
+        helpers = marker + '''
+static inline void susfs_clear_current_proc_umounted(void) {
+\tclear_thread_flag(TIF_PROC_UMOUNTED);
+}
+
+static inline bool susfs_is_current_proc_no_su(void) {
+\treturn likely(test_thread_flag(TIF_PROC_NO_SU));
+}
+
+static inline void susfs_set_current_proc_no_su(void) {
+\tset_thread_flag(TIF_PROC_NO_SU);
+}
+
+static inline void susfs_clear_current_proc_no_su(void) {
+\tclear_thread_flag(TIF_PROC_NO_SU);
+}
+
+static inline bool susfs_is_current_proc_umounted_for_zygote_next(void) {
+\treturn likely(test_thread_flag(TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT));
+}
+
+static inline void susfs_set_current_proc_umounted_for_zygote_next(void) {
+\tset_thread_flag(TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT);
+}
+
+static inline void susfs_clear_current_proc_umounted_for_zygote_next(void) {
+\tclear_thread_flag(TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT);
+}
+'''
+        if 'susfs_set_current_proc_no_su' not in text:
+            if marker not in text:
+                raise SystemExit('SUSFS umounted helper marker missing; refusing blind patch')
+            text = text.replace(marker, helpers, 1)
+
+        hdr.write_text(text)
+        PY
+
+        echo 'KCFLAGS=-DMODULE_IMPORT_NS\(x\)= -DTWA_RESUME=1 -include linux/sched/task.h' >> "$GITHUB_ENV"
+        echo "Pinned ReSukiSU: $RESUKISU_COMMIT"
+        grep -nE 'TIF_PROC_(UMOUNTED|NO_SU)|susfs_(set|clear|is)_current_proc_(no_su|umounted_for_zygote_next)' include/linux/susfs_def.h
+
     - name: Run Build Script
       run: |
         chmod +x build_kernel.sh
-        
-        ARGS="${{ github.event.inputs.device }}"
-        
-        if [ "${{ github.event.inputs.ksu }}" == "true" ]; then
+
+        DEVICE="${{ github.event.inputs.device || 'lmi' }}"
+        KSU="${{ github.event.inputs.ksu || 'true' }}"
+        TARGET_OS="${{ github.event.inputs.target_os || 'miui' }}"
+        ARGS="$DEVICE"
+
+        if [ "$KSU" = "true" ]; then
           ARGS="$ARGS ksu"
         fi
-        
-        if [ "${{ github.event.inputs.target_os }}" != "both" ]; then
-          ARGS="$ARGS ${{ github.event.inputs.target_os }}"
+
+        if [ "$TARGET_OS" != "both" ]; then
+          ARGS="$ARGS $TARGET_OS"
         fi
-        
+
         echo "Executing command: ./build_kernel.sh $ARGS"
         ./build_kernel.sh $ARGS
 
     - name: Upload Flashable ZIP
       uses: actions/upload-artifact@v7
       with:
-        name: APTKernel-${{ github.event.inputs.device }}-${{ github.event.inputs.target_os }}-${{ github.run_id }}
+        name: APTKernel-${{ github.event.inputs.device || 'lmi' }}-${{ github.event.inputs.target_os || 'miui' }}-${{ github.run_id }}
         path: APTKernel_*.zip
-        compression-level: 0 # 已经被 zip 压缩过，无需再二次压缩
+        compression-level: 0
