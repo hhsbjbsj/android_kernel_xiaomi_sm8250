@@ -42,12 +42,12 @@ on:
 
 jobs:
   build-kernel:
-    name: Build ${{ github.event.inputs.device || 'lmi' }} | ReSukiSU:${{ github.event.inputs.ksu || 'true' }} | OS:${{ github.event.inputs.target_os || 'miui' }}
+    name: Build Kernel
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout Repository
-      uses: actions/checkout@v7
+      uses: actions/checkout@v4
       with:
         fetch-depth: 1
 
@@ -61,13 +61,12 @@ jobs:
           schedtool squashfs-tools xsltproc zip zlib1g-dev python3
 
     - name: Cache ccache
-      uses: actions/cache@v6
+      uses: actions/cache@v4
       with:
         path: ~/.cache/ccache_mikernel
-        key: ${{ runner.os }}-kernel-ccache-${{ github.event.inputs.device || 'lmi' }}-${{ github.run_id }}
+        key: kernel-ccache-${{ github.run_id }}
         restore-keys: |
-          ${{ runner.os }}-kernel-ccache-${{ github.event.inputs.device || 'lmi' }}-
-          ${{ runner.os }}-kernel-ccache-
+          kernel-ccache-
 
     - name: Setup zyc-clang 16 Toolchain
       run: |
@@ -95,19 +94,18 @@ jobs:
 
         hdr = Path('include/linux/susfs_def.h')
         text = hdr.read_text()
-
-        marker = '#define TIF_PROC_UMOUNTED 33\n'
-        flags = '#define TIF_PROC_UMOUNTED 33\n#define TIF_PROC_NO_SU 34\n#define TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT 35\n'
+        flag_marker = '#define TIF_PROC_UMOUNTED 33\n'
+        flag_block = '#define TIF_PROC_UMOUNTED 33\n#define TIF_PROC_NO_SU 34\n#define TIF_PROC_UMOUNTED_FOR_ZYGOTE_NEXT 35\n'
         if '#define TIF_PROC_NO_SU 34' not in text:
-            if marker not in text:
+            if flag_marker not in text:
                 raise SystemExit('TIF_PROC_UMOUNTED marker missing; SUSFS layout changed')
-            text = text.replace(marker, flags, 1)
+            text = text.replace(flag_marker, flag_block, 1)
 
-        marker = '''static inline void susfs_set_current_proc_umounted(void) {
+        helper_marker = '''static inline void susfs_set_current_proc_umounted(void) {
 \tset_thread_flag(TIF_PROC_UMOUNTED);
 }
 '''
-        helpers = marker + '''
+        helper_block = helper_marker + '''
 static inline void susfs_clear_current_proc_umounted(void) {
 \tclear_thread_flag(TIF_PROC_UMOUNTED);
 }
@@ -137,9 +135,9 @@ static inline void susfs_clear_current_proc_umounted_for_zygote_next(void) {
 }
 '''
         if 'susfs_set_current_proc_no_su' not in text:
-            if marker not in text:
-                raise SystemExit('SUSFS umounted helper marker missing; refusing blind patch')
-            text = text.replace(marker, helpers, 1)
+            if helper_marker not in text:
+                raise SystemExit('SUSFS helper layout changed; refusing blind patch')
+            text = text.replace(helper_marker, helper_block, 1)
 
         hdr.write_text(text)
         PY
@@ -149,18 +147,20 @@ static inline void susfs_clear_current_proc_umounted_for_zygote_next(void) {
         grep -nE 'TIF_PROC_(UMOUNTED|NO_SU)|susfs_(set|clear|is)_current_proc_(no_su|umounted_for_zygote_next)' include/linux/susfs_def.h
 
     - name: Run Build Script
+      env:
+        INPUT_DEVICE: ${{ github.event.inputs.device }}
+        INPUT_KSU: ${{ github.event.inputs.ksu }}
+        INPUT_TARGET_OS: ${{ github.event.inputs.target_os }}
       run: |
         chmod +x build_kernel.sh
-
-        DEVICE="${{ github.event.inputs.device || 'lmi' }}"
-        KSU="${{ github.event.inputs.ksu || 'true' }}"
-        TARGET_OS="${{ github.event.inputs.target_os || 'miui' }}"
+        DEVICE="${INPUT_DEVICE:-lmi}"
+        KSU="${INPUT_KSU:-true}"
+        TARGET_OS="${INPUT_TARGET_OS:-miui}"
         ARGS="$DEVICE"
 
         if [ "$KSU" = "true" ]; then
           ARGS="$ARGS ksu"
         fi
-
         if [ "$TARGET_OS" != "both" ]; then
           ARGS="$ARGS $TARGET_OS"
         fi
@@ -169,8 +169,8 @@ static inline void susfs_clear_current_proc_umounted_for_zygote_next(void) {
         ./build_kernel.sh $ARGS
 
     - name: Upload Flashable ZIP
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@v4
       with:
-        name: APTKernel-${{ github.event.inputs.device || 'lmi' }}-${{ github.event.inputs.target_os || 'miui' }}-${{ github.run_id }}
+        name: APTKernel-${{ github.run_id }}
         path: APTKernel_*.zip
         compression-level: 0
