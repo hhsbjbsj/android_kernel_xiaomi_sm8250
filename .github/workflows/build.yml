@@ -6,7 +6,7 @@ on:
       device:
         description: 'Target Device Code (设备代号)'
         required: true
-        default: 'lmi'
+        default: 'alioth'
         type: choice
         options:
           - alioth
@@ -108,7 +108,7 @@ jobs:
         INPUT_TARGET_OS: ${{ github.event.inputs.target_os }}
       run: |
         chmod +x build_kernel.sh
-        DEVICE="${INPUT_DEVICE:-lmi}"
+        DEVICE="${INPUT_DEVICE:-alioth}"
         KSU="${INPUT_KSU:-true}"
         TARGET_OS="${INPUT_TARGET_OS:-miui}"
         ARGS="$DEVICE"
