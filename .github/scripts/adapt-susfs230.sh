@@ -45,6 +45,21 @@ d = d.replace(
     "inode->i_state => A 'unsigned long' type storing flag 'AS_FLAGS_",
 )
 
+# Hook units include susfs_def.h without version.h. GKI 2.3 header omits it.
+if '#include <linux/version.h>' not in d:
+    if '#include <linux/bits.h>' in d:
+        d = d.replace(
+            '#include <linux/bits.h>',
+            '#include <linux/bits.h>\n#include <linux/version.h>\n#include <linux/cred.h>',
+            1,
+        )
+    else:
+        d = d.replace(
+            '#define KSU_SUSFS_DEF_H',
+            '#define KSU_SUSFS_DEF_H\n\n#include <linux/version.h>\n#include <linux/cred.h>',
+            1,
+        )
+
 if 'SUSFS_DECL_FSNOTIFY_OPS' not in d:
     helper = r'''
 /* 4.19 / non-GKI fsnotify compatibility */
@@ -129,6 +144,8 @@ int susfs_open_redirect_spoof_show_map_vma(struct inode *inode, unsigned long *o
 
 if 'i_mapping->flags' in c or 'i_mapping->flags' in d:
     raise SystemExit('i_mapping->flags still present after rewrite')
+if '#include <linux/version.h>' not in d:
+    raise SystemExit('susfs_def.h missing linux/version.h')
 if 'SUSFS_DECL_FSNOTIFY_OPS' not in d or 'SUSFS_DECL_FSNOTIFY_OPS' not in c:
     raise SystemExit('4.19 fsnotify decl missing')
 if 'fsnotify_add_mark' not in c and 'fsnotify_add_inode_mark' not in c:
@@ -152,6 +169,7 @@ else:
 PY
 
 grep -Fq '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
+grep -Fq '#include <linux/version.h>' include/linux/susfs_def.h
 grep -Fq '#define TIF_PROC_NO_SU 34' include/linux/susfs_def.h
 grep -Fq 'susfs_is_current_proc_no_su' include/linux/susfs_def.h
 grep -Fq 'susfs_is_current_proc_umounted_for_zygote_next' include/linux/susfs_def.h
