@@ -37,6 +37,8 @@ on:
     paths:
       - '.github/workflows/resukisu42-susfs230.yml'
       - '.github/scripts/adapt-susfs230.sh'
+      - '.github/scripts/rewrite-susfs230-hooks.py'
+      - '.github/scripts/adapt-resukisu-sucompat230.sh'
 
 jobs:
   build-kernel:
@@ -74,11 +76,14 @@ jobs:
         wget -q https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260510-release/Clang-16.0.6-20260510.tar.gz
         tar -zxvf Clang-16.0.6-20260510.tar.gz
 
-    - name: Adapt SUSFS 2.2.0 to 2.3.0 in the working tree only
+    - name: Full SUSFS 2.3.0 backport (GKI overlay + 4.19 hooks)
       run: |
-        chmod +x .github/scripts/adapt-susfs230.sh
+        chmod +x .github/scripts/adapt-susfs230.sh .github/scripts/adapt-resukisu-sucompat230.sh
         .github/scripts/adapt-susfs230.sh
         grep -Fq '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
+        grep -Fq 'susfs_is_current_proc_no_su()' fs/exec.c
+        grep -Fq 'filename_lookup(dfd, fname, lookup_flags, &path, NULL)' fs/open.c
+        grep -Fq 'filename_lookup(dfd, fname, lookup_flags, &path, NULL)' fs/stat.c
 
     - name: Use ReSukiSU v4.2.0-rc1
       env:
@@ -94,14 +99,30 @@ jobs:
         new = f'curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/{version}/kernel/setup.sh" | bash -s -- {version}'
 
         if old in text:
-            build.write_text(text.replace(old, new, 1))
+            text = text.replace(old, new, 1)
         elif version not in text:
             raise SystemExit('ReSukiSU setup command layout changed; refusing blind patch')
+
+        marker = 'echo "[+] KernelSU setup finished."'
+        inject = marker + '\n    chmod +x .github/scripts/adapt-resukisu-sucompat230.sh\n    .github/scripts/adapt-resukisu-sucompat230.sh'
+        if marker not in text:
+            raise SystemExit('cannot find KernelSU setup finished marker')
+        if 'adapt-resukisu-sucompat230.sh' not in text:
+            text = text.replace(marker, inject, 1)
+
+        cfg = '-e KSU_SUSFS'
+        cfg_new = '-e KSU_SUSFS \\\n            -d KPM'
+        if '-d KPM' not in text:
+            if cfg not in text:
+                raise SystemExit('cannot find KSU_SUSFS config injection')
+            text = text.replace(cfg, cfg_new, 1)
+
+        build.write_text(text)
         PY
 
         echo 'KCFLAGS=-DMODULE_IMPORT_NS\(x\)= -DTWA_RESUME=1' >> "$GITHUB_ENV"
         echo "ReSukiSU version: $RESUKISU_VERSION"
-        grep -n 'ReSukiSU' build_kernel.sh | head
+        grep -nE 'ReSukiSU|adapt-resukisu|KPM' build_kernel.sh | head
 
     - name: Run proven build script
       env:
