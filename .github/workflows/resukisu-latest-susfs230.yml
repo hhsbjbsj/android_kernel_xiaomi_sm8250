@@ -94,9 +94,10 @@ jobs:
         fi
         echo "RESUKISU_SHA=$RESUKISU_SHA" >> "$GITHUB_ENV"
         echo "Resolved ReSukiSU main: $RESUKISU_SHA"
-        python3 - <<PY
+        python3 - "$RESUKISU_SHA" <<'PY'
         from pathlib import Path
-        sha = "$RESUKISU_SHA"
+        import sys
+        sha = sys.argv[1]
         build = Path('build_kernel.sh')
         text = build.read_text()
         old = 'curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash'
@@ -106,8 +107,7 @@ jobs:
         )
         if old in text:
             text = text.replace(old, new, 1)
-        elif 'kernel/setup.sh' in text and sha not in text:
-            # already pinned to a tag/commit; retarget to latest SHA
+        elif sha not in text:
             import re
             text2, n = re.subn(
                 r'curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/[^/]+/kernel/setup.sh" \| bash(?: -s -- \S+)?',
@@ -118,27 +118,30 @@ jobs:
             if n != 1:
                 raise SystemExit('ReSukiSU setup command layout changed; refusing blind patch')
             text = text2
-        elif sha not in text:
-            raise SystemExit('ReSukiSU setup command layout changed; refusing blind patch')
 
         marker = 'echo "[+] KernelSU setup finished."'
-        inject = marker + '\n    chmod +x .github/scripts/adapt-resukisu-sucompat230.sh\n    .github/scripts/adapt-resukisu-sucompat230.sh'
+        inject = (
+            marker
+            + '\n    chmod +x .github/scripts/adapt-resukisu-sucompat230.sh'
+            + '\n    .github/scripts/adapt-resukisu-sucompat230.sh'
+        )
         if marker not in text:
             raise SystemExit('cannot find KernelSU setup finished marker')
         if 'adapt-resukisu-sucompat230.sh' not in text:
             text = text.replace(marker, inject, 1)
 
-        cfg = '-e KSU_SUSFS'
-        if '-d KPM' not in text:
-            if cfg not in text:
-                raise SystemExit('cannot find KSU_SUSFS config injection')
-            text = text.replace(cfg, '-e KSU_SUSFS \\\n            -d KPM', 1)
+        ksu_cfg = '''        scripts/config --file "${OUT_DIR}/.config" \\\n            -e KSU \\\n            -e THREAD_INFO_IN_TASK \\\n            -e KSU_SUSFS\n'''
+        ksu_cfg_new = ksu_cfg + '        scripts/config --file "${OUT_DIR}/.config" -d KPM || true\n'
+        if 'scripts/config --file "${OUT_DIR}/.config" -d KPM' not in text:
+            if ksu_cfg not in text:
+                raise SystemExit('cannot find KernelSU scripts/config block')
+            text = text.replace(ksu_cfg, ksu_cfg_new, 1)
 
         build.write_text(text)
         print('pinned ReSukiSU setup to', sha)
         PY
-        echo 'KCFLAGS=-DMODULE_IMPORT_NS\(x\)= -DTWA_RESUME=1' >> "$GITHUB_ENV"
-        grep -nE 'ReSukiSU|adapt-resukisu|KPM' build_kernel.sh | head
+        echo 'KCFLAGS=-DMODULE_IMPORT_NS\\(x\\)= -DTWA_RESUME=1' >> "$GITHUB_ENV"
+        grep -nE 'ReSukiSU|adapt-resukisu|-d KPM' build_kernel.sh | head
 
     - name: Run proven build script
       env:
