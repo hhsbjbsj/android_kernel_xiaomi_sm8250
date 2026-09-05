@@ -11,19 +11,21 @@ HDR=
 for f in "${HDR_CANDIDATES[@]}"; do [[ -f "$f" ]] && HDR="$f" && break; done
 [[ -n "$HDR" ]] || HDR=$(dirname "$SUC")/sucompat.h
 echo using "$SUC" "$HDR"
+
 python3 -u - "$SUC" "$HDR" <<'PY'
 from pathlib import Path
-import sys, re
+import sys
 suc, hdr = Path(sys.argv[1]), Path(sys.argv[2])
 t = suc.read_text()
-old = '''#ifdef CONFIG_KSU_SUSFS
+
+old = """#ifdef CONFIG_KSU_SUSFS
             if (!susfs_is_current_proc_umounted())
                 susfs_set_current_proc_umounted();
-#endif'''
-new = '''#ifdef CONFIG_KSU_SUSFS
+#endif"""
+new = """#ifdef CONFIG_KSU_SUSFS
             if (!susfs_is_current_proc_no_su())
                 susfs_set_current_proc_no_su();
-#endif'''
+#endif"""
 if old in t:
     t = t.replace(old, new, 1)
     print('exec init: umounted -> no_su', flush=True)
@@ -31,124 +33,69 @@ elif 'susfs_set_current_proc_no_su()' in t:
     print('exec init already no_su', flush=True)
 else:
     raise SystemExit('cannot find umounted mark in exec init')
-fa_re = re.compile(r'int ksu_handle_faccessat\(int \*dfd, const char __user \*\*filename_user, int \*mode, int \*__unused_flags\)\s*\{.*?\n\}\n', re.S)
-fa_new = '''int ksu_handle_faccessat(int *dfd, struct filename **filename, int *mode, int *__unused_flags)
-{
-#ifndef CONFIG_KSU_TRACEPOINT_HOOK
-    if (ksu_is_current_proc_unprivillege()) {
-        return 0;
-    }
-#endif
-#ifdef KSU_COMPAT_USE_STATIC_KEY
-    if (!static_branch_unlikely(&ksu_su_compat_enabled)) {
-        return 0;
-    }
-#else
-    if (!ksu_su_compat_enabled) {
-        return 0;
-    }
-#endif
-    if (!ksu_is_allow_uid_for_current(ksu_get_uid_t(current_uid())))
-        return 0;
-    if (unlikely(IS_ERR(*filename) || (*filename)->name == NULL)) {
-        return 0;
-    }
-    if (likely(memcmp((*filename)->name, su_path, sizeof(su_path)))) {
-        return 0;
-    }
-    pr_info("faccessat su->sh!\\n");
-    memcpy((void *)((*filename)->name), sh_path, sizeof(sh_path));
-    return 0;
-}
-'''
-if fa_re.search(t):
-    t, n = fa_re.subn(fa_new + '\n', t, count=1)
-    print('faccessat: filename**', n, flush=True)
-elif 'int ksu_handle_faccessat(int *dfd, struct filename **filename' in t:
+
+# ReSukiSU 4.2 already ships the filename** stat handler behind 6.1+.
+# SUSFS 2.3 needs that ABI on 4.19, so just drop the version gate.
+gate = '#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0) && defined(CONFIG_KSU_SUSFS)'
+if gate not in t:
+    raise SystemExit('missing 6.1 SUSFS stat guard in sucompat.c')
+t = t.replace(gate, '#if defined(CONFIG_KSU_SUSFS)', 1)
+print('stat: reuse existing filename** handler on 4.19', flush=True)
+
+# faccessat: clone the now-selected filename** stat body.
+old_fa = 'int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *__unused_flags)'
+new_fa = 'int ksu_handle_faccessat(int *dfd, struct filename **filename, int *mode, int *__unused_flags)'
+if new_fa in t:
     print('faccessat already filename**', flush=True)
-else:
+elif old_fa not in t:
     raise SystemExit('cannot find ksu_handle_faccessat user-pointer impl')
-st_re = re.compile(
-    r'#if LINUX_VERSION_CODE >= KERNEL_VERSION\(6, 1, 0\) && defined\(CONFIG_KSU_SUSFS\)\n'
-    r'int ksu_handle_stat\(int \*dfd, struct filename \*\*filename, int \*flags\)\n'
-    r'\{.*?\n\}\n'
-    r'#else\n'
-    r'int ksu_handle_stat\(int \*dfd, const char __user \*\*filename_user, int \*flags\)\n'
-    r'\{.*?\n\}\n'
-    r'#endif // #if LINUX_VERSION_CODE >= KERNEL_VERSION\(6, 1, 0\)\n',
-    re.S)
-st_new = '''int ksu_handle_stat(int *dfd, struct filename **filename, int *flags)
-{
-#ifndef CONFIG_KSU_TRACEPOINT_HOOK
-    if (ksu_is_current_proc_unprivillege()) {
-        return 0;
-    }
-#endif
-#ifdef KSU_COMPAT_USE_STATIC_KEY
-    if (!static_branch_unlikely(&ksu_su_compat_enabled)) {
-        return 0;
-    }
-#else
-    if (!ksu_su_compat_enabled) {
-        return 0;
-    }
-#endif
-    if (!ksu_is_allow_uid_for_current(ksu_get_uid_t(current_uid())))
-        return 0;
-    if (unlikely(IS_ERR(*filename) || (*filename)->name == NULL)) {
-        return 0;
-    }
-    if (likely(memcmp((*filename)->name, su_path, sizeof(su_path)))) {
-        return 0;
-    }
-    pr_info("ksu_handle_stat: su->sh!\\n");
-    memcpy((void *)((*filename)->name), sh_path, sizeof(sh_path));
-    return 0;
-}
-'''
-if st_re.search(t):
-    t, n = st_re.subn(st_new + '\n', t, count=1)
-    print('stat: unified filename**', n, flush=True)
-elif 'int ksu_handle_stat(int *dfd, struct filename **filename, int *flags)' in t:
-    print('stat already filename**', flush=True)
 else:
-    raise SystemExit('cannot find dual ksu_handle_stat implementations')
+    st_start = t.find('int ksu_handle_stat(int *dfd, struct filename **filename, int *flags)')
+    if st_start < 0:
+        raise SystemExit('filename** stat handler not found after gate change')
+    st_end = t.find('\n}\n', st_start)
+    if st_end < 0:
+        raise SystemExit('cannot find end of filename** stat handler')
+    st_fn = t[st_start:st_end + 3]
+    fa_fn = st_fn.replace(
+        'int ksu_handle_stat(int *dfd, struct filename **filename, int *flags)',
+        new_fa,
+        1,
+    )
+    fa_fn = fa_fn.replace('ksu_handle_stat: su->sh!', 'faccessat su->sh!', 1)
+    fa_start = t.find(old_fa)
+    fa_end = t.find('\n}\n', fa_start)
+    if fa_end < 0:
+        raise SystemExit('cannot find end of faccessat')
+    t = t[:fa_start] + fa_fn + t[fa_end + 3:]
+    print('faccessat: cloned filename** stat handler', flush=True)
+
+if '#include <linux/fs.h>' not in t:
+    needle = '#include <linux/susfs_def.h>'
+    if needle in t:
+        t = t.replace(needle, needle + '\n#include <linux/fs.h>\n#include <linux/err.h>', 1)
+    print('added fs.h/err.h', flush=True)
+
+# Never write a pr_info whose quote spans lines.
+for i, line in enumerate(t.splitlines(), 1):
+    if 'pr_info(' in line and line.count('"') % 2 == 1:
+        raise SystemExit('unterminated pr_info on line %d: %r' % (i, line))
+
 suc.write_text(t)
+
 if hdr.exists():
     h = hdr.read_text()
-    h2 = h.replace(
-        'int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *__unused_flags);',
-        'int ksu_handle_faccessat(int *dfd, struct filename **filename, int *mode, int *__unused_flags);',
-    )
-    h2 = re.sub(
-        r'#if LINUX_VERSION_CODE >= KERNEL_VERSION\(6, 1, 0\) && defined\(CONFIG_KSU_SUSFS\)\n'
-        r'int ksu_handle_stat\(int \*dfd, struct filename \*\*filename, int \*flags\);\n'
-        r'#else\n'
-        r'int ksu_handle_stat\(int \*dfd, const char __user \*\*filename_user, int \*flags\);\n'
-        r'#endif // #if LINUX_VERSION_CODE >= KERNEL_VERSION\(6, 1, 0\) && defined\(CONFIG_KSU_SUSFS\)\n',
-        'int ksu_handle_stat(int *dfd, struct filename **filename, int *flags);\n',
-        h2,
-    )
-    if 'struct filename **filename, int *mode' not in h2:
+    h = h.replace(old_fa + ';', new_fa + ';')
+    if gate in h:
+        h = h.replace(gate, '#if defined(CONFIG_KSU_SUSFS)')
+    if new_fa not in h:
         raise SystemExit('header faccessat prototype not updated')
-    hdr.write_text(h2)
+    hdr.write_text(h)
     print('updated', hdr, flush=True)
-src = suc.read_text()
-need = []
-if '#include <linux/fs.h>' not in src:
-    need.append('<linux/fs.h>')
-if '#include <linux/err.h>' not in src:
-    need.append('<linux/err.h>')
-if need:
-    lines = src.splitlines(True)
-    for i, ln in enumerate(lines):
-        if ln.startswith('#include'):
-            for inc in reversed(need):
-                lines.insert(i + 1, f'#include {inc}\n')
-            suc.write_text(''.join(lines))
-            print('added includes', need, flush=True)
-            break
+
+print('[PASS] sucompat text rewritten', flush=True)
 PY
+
 grep -Fq 'susfs_set_current_proc_no_su' "$SUC"
 grep -Fq 'int ksu_handle_faccessat(int *dfd, struct filename **filename' "$SUC"
 grep -Fq 'int ksu_handle_stat(int *dfd, struct filename **filename' "$SUC"
