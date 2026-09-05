@@ -96,7 +96,9 @@ jobs:
         echo "RESUKISU_SHA=$RESUKISU_SHA" >> "$GITHUB_ENV"
         echo "Resolved ReSukiSU main: $RESUKISU_SHA"
         python3 .github/scripts/adapt-resukisu-latest-setup.py "$RESUKISU_SHA"
-        echo 'KCFLAGS=-DMODULE_IMPORT_NS\\(x\\)= -DTWA_RESUME=1' >> "$GITHUB_ENV"
+        # Same escaping as the working 4.2 workflow. Extra backslashes turn
+        # MODULE_IMPORT_NS(x) into a dash subshell and break scripts/mod.
+        echo 'KCFLAGS=-DMODULE_IMPORT_NS\(x\)= -DTWA_RESUME=1' >> "$GITHUB_ENV"
         grep -nE 'ReSukiSU|adapt-resukisu|-d KPM' build_kernel.sh | head
 
     - name: Run proven build script
@@ -109,6 +111,7 @@ jobs:
         TARGET_OS="${INPUT_TARGET_OS:-miui}"
         echo "Executing command: ./build_kernel.sh $DEVICE ksu $TARGET_OS"
         echo "ReSukiSU SHA: ${RESUKISU_SHA:-unknown}"
+        echo "KCFLAGS=$KCFLAGS"
         ./build_kernel.sh "$DEVICE" ksu "$TARGET_OS"
         grep -Fq '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
         echo "resukisu_sha=${RESUKISU_SHA:-unknown}" >> adapt-susfs230-proof.txt
