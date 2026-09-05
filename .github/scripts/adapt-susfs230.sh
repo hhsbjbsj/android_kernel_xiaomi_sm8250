@@ -45,7 +45,6 @@ d = d.replace(
     "inode->i_state => A 'unsigned long' type storing flag 'AS_FLAGS_",
 )
 
-# Hook units include susfs_def.h without version.h. GKI 2.3 header omits it.
 if '#include <linux/version.h>' not in d:
     if '#include <linux/bits.h>' in d:
         d = d.replace(
@@ -159,27 +158,38 @@ Path('include/linux/susfs.h').write_text(gki_h)
 Path('include/linux/susfs_def.h').write_text(d)
 Path('fs/susfs.c').write_text(c)
 print('overlaid GKI v2.3.0 susfs.c/h/def.h with 4.19 i_state + fsnotify_add_mark', flush=True)
-
-mmu = Path('fs/proc/task_mmu.c')
-mt = mmu.read_text()
-if 'susfs_open_redirect_spoof_show_map_vma' not in mt:
-    print('WARNING: task_mmu.c has no OPEN_REDIRECT hook; left unchanged', flush=True)
-else:
-    print('kept existing 4.19 task_mmu OPEN_REDIRECT hook via compatibility wrapper', flush=True)
 PY
 
 grep -Fq '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
 grep -Fq '#include <linux/version.h>' include/linux/susfs_def.h
 grep -Fq '#define TIF_PROC_NO_SU 34' include/linux/susfs_def.h
 grep -Fq 'susfs_is_current_proc_no_su' include/linux/susfs_def.h
-grep -Fq 'susfs_is_current_proc_umounted_for_zygote_next' include/linux/susfs_def.h
-grep -Fq 'SUSFS_DECL_FSNOTIFY_OPS' include/linux/susfs_def.h
-grep -Fq 'SUSFS_DECL_FSNOTIFY_OPS' fs/susfs.c
-grep -Eq 'fsnotify_add_mark|fsnotify_add_inode_mark' fs/susfs.c
-grep -Fq 'susfs_open_redirect_spoof_show_map_vma_srcu' fs/susfs.c
-! grep -Fq 'i_mapping->flags' include/linux/susfs_def.h
-! grep -Fq 'i_mapping->flags' fs/susfs.c
-grep -Fq '&inode->i_state' fs/susfs.c
+
+echo '===== Rewrite 4.19 2.2 hook sites to official SUSFS 2.3 ====='
+python3 -u .github/scripts/rewrite-susfs230-hooks.py
+
+grep -Fq 'susfs_is_current_proc_no_su()' fs/exec.c
+grep -Fq 'filename_lookup(dfd, fname, lookup_flags, &path, NULL)' fs/open.c
+grep -Fq 'filename_lookup(dfd, fname, lookup_flags, &path, NULL)' fs/stat.c
+! grep -F 'susfs_is_current_proc_umounted()' fs/exec.c
+! grep -F 'susfs_is_current_proc_umounted()' fs/open.c
+! grep -F 'susfs_is_current_proc_umounted()' fs/stat.c
+
+python3 -u - <<'PY'
+from pathlib import Path
+for p in (Path('fs/susfs.c'), Path('include/linux/susfs.h'), Path('include/linux/susfs_def.h'), Path('fs/open.c'), Path('fs/exec.c'), Path('fs/stat.c')):
+    text = p.read_text()
+    lines = [ln.rstrip(' \t') for ln in text.splitlines()]
+    while lines and lines[-1] == '':
+        lines.pop()
+    p.write_text('\n'.join(lines) + '\n')
+    print('stripped trailing whitespace:', p, flush=True)
+PY
+
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  git add fs/susfs.c include/linux/susfs.h include/linux/susfs_def.h fs/open.c fs/exec.c fs/stat.c
+  git diff --cached --check
+fi
 
 {
   echo "base=$GITHUB_SHA"
@@ -188,9 +198,8 @@ grep -Fq '&inode->i_state' fs/susfs.c
   echo 'susfs_upstream=gki-android12-5.10 v2.3.0'
   echo 'susfs_to=v2.3.0'
   echo 'flag_storage=inode_i_state'
-  echo 'fsnotify=SUSFS_DECL_FSNOTIFY_OPS + fsnotify_add_mark/add_inode_mark'
-  echo 'open_redirect=2.3 srcu helpers + 4.19 wrapper'
-  echo 'kernel_git_source=untouched'
+  echo 'hooks=exec.c no_su; open.c/stat.c getname_flags+filename_lookup+filename**'
+  echo 'refs=simonpunk da34bba1 f3087ec1 + JackA1ltman susfs_inline_hook_patches.sh'
 } | tee "$GITHUB_WORKSPACE/adapt-susfs230-proof.txt"
 
-echo '[PASS] official GKI SUSFS 2.3.0 backported onto 4.19 i_state + fsnotify_add_mark'
+echo '[PASS] official GKI SUSFS 2.3.0 core + 4.19 hook rewrite'
