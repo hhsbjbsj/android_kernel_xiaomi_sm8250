@@ -1,4 +1,4 @@
-name: A17 ReSukiSU 4.2 + SUSFS 2.3.0
+name: A17 ReSukiSU latest + SUSFS 2.3.0
 
 on:
   workflow_dispatch:
@@ -32,14 +32,14 @@ on:
           - miui
           - both
       enable_kpm:
-        description: 'Enable KPM (SukiSU-style). ReSukiSU baseline keeps this off.'
+        description: 'Enable KPM (SukiSU-style). Latest ReSukiSU baseline keeps this off.'
         required: true
         type: boolean
         default: false
 
 jobs:
   build-kernel:
-    name: A17 ReSukiSU4.2 SUSFS2.3 ${{ github.event.inputs.device }} ${{ github.event.inputs.target_os }} KPM=${{ github.event.inputs.enable_kpm }}
+    name: A17 ReSukiSU-latest SUSFS2.3 ${{ github.event.inputs.device }} ${{ github.event.inputs.target_os }} KPM=${{ github.event.inputs.enable_kpm }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
@@ -72,6 +72,7 @@ jobs:
         test -f fs/susfs.c
         test -f fs/proc/task_mmu.c
         test -f build_kernel.sh
+        test -f .github/scripts/adapt-resukisu-latest-setup.py
         grep -F 'SUBLEVEL' Makefile | head -3
         grep -F 'SUSFS_VERSION' include/linux/susfs.h | head -3
         ls -l .github/scripts
@@ -89,9 +90,9 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ~/.cache/ccache_mikernel
-        key: kernel-ccache-a17-resukisu42-susfs230-${{ github.event.inputs.device }}-${{ github.run_id }}
+        key: kernel-ccache-a17-resukisu-latest-susfs230-${{ github.event.inputs.device }}-${{ github.run_id }}
         restore-keys: |
-          kernel-ccache-a17-resukisu42-susfs230-${{ github.event.inputs.device }}-
+          kernel-ccache-a17-resukisu-latest-susfs230-${{ github.event.inputs.device }}-
           kernel-ccache-a17-
 
     - name: Setup zyc-clang 16 (A17 toolchain)
@@ -113,53 +114,33 @@ jobs:
         grep -Fq 'filename_lookup(dfd, fname, lookup_flags, &path, NULL)' fs/stat.c
         echo 'baseline_branch=AstideLabs/android17-aptusitu' >> adapt-susfs230-proof.txt
 
-    - name: Pin ReSukiSU v4.2.0-rc1 and sucompat 2.3 adapter
+    - name: Use latest ReSukiSU main
       env:
-        RESUKISU_VERSION: v4.2.0-rc1
         ENABLE_KPM: ${{ github.event.inputs.enable_kpm }}
       run: |
-        python3 - <<'PY'
+        RESUKISU_SHA=$(git ls-remote https://github.com/ReSukiSU/ReSukiSU.git refs/heads/main | awk '{print $1}')
+        if [ -z "$RESUKISU_SHA" ]; then
+          echo 'failed to resolve ReSukiSU main SHA'
+          exit 1
+        fi
+        echo "RESUKISU_SHA=$RESUKISU_SHA" >> "$GITHUB_ENV"
+        echo "Resolved ReSukiSU main: $RESUKISU_SHA"
+        python3 .github/scripts/adapt-resukisu-latest-setup.py "$RESUKISU_SHA"
+        if [ "${ENABLE_KPM}" = "true" ]; then
+          python3 - <<'PY'
         from pathlib import Path
-        import os
-
-        build = Path('build_kernel.sh')
-        text = build.read_text()
-        old = 'curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash'
-        version = 'v4.2.0-rc1'
-        new = f'curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/{version}/kernel/setup.sh" | bash -s -- {version}'
-
-        if old in text:
-            text = text.replace(old, new, 1)
-        elif version not in text:
-            raise SystemExit('ReSukiSU setup command layout changed; refusing blind patch')
-
-        marker = 'echo "[+] KernelSU setup finished."'
-        inject = marker + '\n    chmod +x .github/scripts/adapt-resukisu-sucompat230.sh\n    .github/scripts/adapt-resukisu-sucompat230.sh'
-        if marker not in text:
-            raise SystemExit('cannot find KernelSU setup finished marker')
-        if 'adapt-resukisu-sucompat230.sh' not in text:
-            text = text.replace(marker, inject, 1)
-
-        enable_kpm = os.environ.get('ENABLE_KPM', 'false').lower() == 'true'
-        cfg = '-e KSU_SUSFS'
-        if enable_kpm:
-            cfg_new = '-e KSU_SUSFS \\\n            -e KPM'
-        else:
-            cfg_new = '-e KSU_SUSFS \\\n            -d KPM'
-        if '-d KPM' not in text and '-e KPM' not in text:
-            if cfg not in text:
-                raise SystemExit('cannot find KSU_SUSFS config injection')
-            text = text.replace(cfg, cfg_new, 1)
-
-        build.write_text(text)
-        print('KPM enabled:', enable_kpm)
+        p = Path('build_kernel.sh')
+        t = p.read_text()
+        t = t.replace('-d KPM', '-e KPM')
+        t = t.replace('scripts/config --file "${OUT_DIR}/.config" -d KPM || true', 'scripts/config --file "${OUT_DIR}/.config" -e KPM || true')
+        p.write_text(t)
+        print('KPM enabled')
         PY
-
+        fi
         echo 'KCFLAGS=-DMODULE_IMPORT_NS\(x\)= -DTWA_RESUME=1' >> "$GITHUB_ENV"
-        echo "ReSukiSU version: $RESUKISU_VERSION"
         grep -nE 'ReSukiSU|adapt-resukisu|KPM' build_kernel.sh | head
 
-    - name: Build A17 miui/aosp with proven script
+    - name: Build A17 miui/aosp with latest ReSukiSU
       env:
         INPUT_DEVICE: ${{ github.event.inputs.device }}
         INPUT_TARGET_OS: ${{ github.event.inputs.target_os }}
@@ -168,15 +149,19 @@ jobs:
         DEVICE="${INPUT_DEVICE:-alioth}"
         TARGET_OS="${INPUT_TARGET_OS:-miui}"
         echo "Executing command: ./build_kernel.sh $DEVICE ksu $TARGET_OS"
+        echo "ReSukiSU SHA: ${RESUKISU_SHA:-unknown}"
+        echo "KCFLAGS=$KCFLAGS"
         ./build_kernel.sh "$DEVICE" ksu "$TARGET_OS"
         grep -Fq '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
+        echo "resukisu_sha=${RESUKISU_SHA:-unknown}" >> adapt-susfs230-proof.txt
+        echo 'resukisu_ref=main-latest' >> adapt-susfs230-proof.txt
         ls -lh APTKernel_*.zip || true
 
     - name: Upload artifacts
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: A17-ReSukiSU42-SUSFS230-${{ github.event.inputs.device || 'alioth' }}-${{ github.event.inputs.target_os || 'miui' }}-${{ github.run_number }}
+        name: A17-ReSukiSU-latest-SUSFS230-${{ github.event.inputs.device || 'alioth' }}-${{ github.event.inputs.target_os || 'miui' }}-${{ github.run_number }}
         path: |
           APTKernel_*.zip
           adapt-susfs230.log
