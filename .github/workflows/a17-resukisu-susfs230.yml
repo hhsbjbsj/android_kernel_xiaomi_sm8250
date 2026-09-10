@@ -42,10 +42,14 @@ jobs:
     name: A17 ReSukiSU4.2 SUSFS2.3 ${{ github.event.inputs.device }} ${{ github.event.inputs.target_os }} KPM=${{ github.event.inputs.enable_kpm }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
-    defaults:
-      run:
-        working-directory: kernel
     steps:
+    - name: Checkout AstideLabs android17-aptusitu
+      uses: actions/checkout@v4
+      with:
+        repository: AstideLabs/android_kernel_xiaomi_sm8250
+        ref: android17-aptusitu
+        fetch-depth: 1
+
     - name: Checkout CI overlay scripts
       uses: actions/checkout@v4
       with:
@@ -56,29 +60,23 @@ jobs:
           .github/scripts
         sparse-checkout-cone-mode: false
 
-    - name: Checkout AstideLabs android17-aptusitu
-      uses: actions/checkout@v4
-      with:
-        repository: AstideLabs/android_kernel_xiaomi_sm8250
-        ref: android17-aptusitu
-        path: kernel
-        fetch-depth: 1
-
     - name: Install overlay scripts into A17 tree
-      working-directory: .
       run: |
-        mkdir -p kernel/.github/scripts
-        cp -a _overlay/.github/scripts/. kernel/.github/scripts/
-        chmod +x kernel/.github/scripts/*.sh kernel/.github/scripts/*.py
-        test -f kernel/include/linux/susfs.h
-        test -f kernel/fs/susfs.c
-        test -f kernel/build_kernel.sh
-        grep -F 'SUBLEVEL' kernel/Makefile | head -3
-        grep -F 'SUSFS_VERSION' kernel/include/linux/susfs.h | head -3
-        echo "GITHUB_WORKSPACE=${GITHUB_WORKSPACE}/kernel" >> "$GITHUB_ENV"
+        mkdir -p .github/scripts
+        cp -a _overlay/.github/scripts/. .github/scripts/
+        chmod +x .github/scripts/*.sh .github/scripts/*.py
+        echo "cwd=$(pwd)"
+        echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+        test -f include/linux/susfs.h
+        test -f include/linux/susfs_def.h
+        test -f fs/susfs.c
+        test -f fs/proc/task_mmu.c
+        test -f build_kernel.sh
+        grep -F 'SUBLEVEL' Makefile | head -3
+        grep -F 'SUSFS_VERSION' include/linux/susfs.h | head -3
+        ls -l .github/scripts
 
     - name: Set up Environment
-      working-directory: .
       run: |
         sudo apt-get update
         sudo apt-get install -y bc bison build-essential ccache curl flex gawk \
@@ -97,7 +95,6 @@ jobs:
           kernel-ccache-a17-
 
     - name: Setup zyc-clang 16 (A17 toolchain)
-      working-directory: .
       run: |
         mkdir -p $HOME/zyc-clang
         cd $HOME/zyc-clang
@@ -106,12 +103,15 @@ jobs:
 
     - name: Full SUSFS 2.3.0 backport (GKI overlay + 4.19 hooks)
       run: |
-        .github/scripts/adapt-susfs230.sh
+        set -Eeuo pipefail
+        echo "cwd=$(pwd) workspace=$GITHUB_WORKSPACE"
+        ls -l include/linux/susfs.h include/linux/susfs_def.h fs/susfs.c fs/proc/task_mmu.c
+        bash -x .github/scripts/adapt-susfs230.sh
         grep -Fq '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
         grep -Fq 'susfs_is_current_proc_no_su()' fs/exec.c
         grep -Fq 'filename_lookup(dfd, fname, lookup_flags, &path, NULL)' fs/open.c
         grep -Fq 'filename_lookup(dfd, fname, lookup_flags, &path, NULL)' fs/stat.c
-        echo 'baseline_branch=AstideLabs/android17-aptusitu' >> "${GITHUB_WORKSPACE}/adapt-susfs230-proof.txt"
+        echo 'baseline_branch=AstideLabs/android17-aptusitu' >> adapt-susfs230-proof.txt
 
     - name: Pin ReSukiSU v4.2.0-rc1 and sucompat 2.3 adapter
       env:
@@ -178,7 +178,7 @@ jobs:
       with:
         name: A17-ReSukiSU42-SUSFS230-${{ github.event.inputs.device || 'alioth' }}-${{ github.event.inputs.target_os || 'miui' }}-${{ github.run_number }}
         path: |
-          kernel/APTKernel_*.zip
-          kernel/adapt-susfs230.log
-          kernel/adapt-susfs230-proof.txt
+          APTKernel_*.zip
+          adapt-susfs230.log
+          adapt-susfs230-proof.txt
         if-no-files-found: warn
