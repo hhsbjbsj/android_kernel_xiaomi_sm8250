@@ -1,14 +1,25 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-cd "${GITHUB_WORKSPACE:-.}"
+ROOT="${GITHUB_WORKSPACE:-.}"
+if [[ ! -f "$ROOT/include/linux/susfs.h" && -f "$ROOT/kernel/include/linux/susfs.h" ]]; then
+  ROOT="$ROOT/kernel"
+fi
+cd "$ROOT"
+export GITHUB_WORKSPACE="$ROOT"
+echo "adapt-susfs230: cwd=$(pwd) workspace=$GITHUB_WORKSPACE"
+for f in include/linux/susfs.h include/linux/susfs_def.h fs/susfs.c fs/proc/task_mmu.c; do
+  if [[ ! -f $f ]]; then
+    echo "MISSING $f"
+    ls -la "$f" || true
+    ls -la include/linux/fs 2>/dev/null | head || true
+    exit 1
+  fi
+  echo "found $f"
+done
 exec > >(tee "$GITHUB_WORKSPACE/adapt-susfs230.log") 2>&1
 
 echo '===== Backport official GKI SUSFS v2.3.0 onto Linux 4.19 i_state + fsnotify_add_mark ====='
-test -f include/linux/susfs.h
-test -f include/linux/susfs_def.h
-test -f fs/susfs.c
-test -f fs/proc/task_mmu.c
 
 GKI_BASE='https://gitlab.com/simonpunk/susfs4ksu/-/raw/gki-android12-5.10/kernel_patches'
 mkdir -p "$GITHUB_WORKSPACE/.susfs23-upstream"
@@ -232,7 +243,7 @@ fi
 
 {
   echo "base=$GITHUB_SHA"
-  echo 'baseline_branch=sync/android16-upstream-20260830'
+  echo 'baseline_branch=AstideLabs/android17-aptusitu'
   echo 'resukisu=v4.2.0-rc1'
   echo 'susfs_upstream=gki-android12-5.10 v2.3.0'
   echo 'susfs_to=v2.3.0'
