@@ -31,7 +31,7 @@ on:
 
 env:
   RESUKISU_REPO: https://github.com/ReSukiSU/ReSukiSU.git
-  RESUKISU_REF: v4.1.0
+  RESUKISU_REF: 1e25a4c5c0e7eb71292f1fa4f48704e5490f1b82
 
 jobs:
   build:
