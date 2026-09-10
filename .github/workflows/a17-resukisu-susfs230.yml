@@ -1,0 +1,184 @@
+name: A17 ReSukiSU 4.2 + SUSFS 2.3.0
+
+on:
+  workflow_dispatch:
+    inputs:
+      device:
+        description: 'Target Device Code'
+        required: true
+        default: 'alioth'
+        type: choice
+        options:
+          - alioth
+          - apollo
+          - cas
+          - cmi
+          - dagu
+          - elish
+          - enuma
+          - lmi
+          - munch
+          - pipa
+          - psyche
+          - thyme
+          - umi
+      target_os:
+        description: 'Target OS (HyperOS 4 / MIUI use miui)'
+        required: true
+        type: choice
+        default: 'miui'
+        options:
+          - aosp
+          - miui
+          - both
+      enable_kpm:
+        description: 'Enable KPM (SukiSU-style). ReSukiSU baseline keeps this off.'
+        required: true
+        type: boolean
+        default: false
+
+jobs:
+  build-kernel:
+    name: A17 ReSukiSU4.2 SUSFS2.3 ${{ github.event.inputs.device }} ${{ github.event.inputs.target_os }} KPM=${{ github.event.inputs.enable_kpm }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    defaults:
+      run:
+        working-directory: kernel
+    steps:
+    - name: Checkout CI overlay scripts
+      uses: actions/checkout@v4
+      with:
+        ref: android17-aptusitu-susfs230
+        path: _overlay
+        fetch-depth: 1
+        sparse-checkout: |
+          .github/scripts
+        sparse-checkout-cone-mode: false
+
+    - name: Checkout AstideLabs android17-aptusitu
+      uses: actions/checkout@v4
+      with:
+        repository: AstideLabs/android_kernel_xiaomi_sm8250
+        ref: android17-aptusitu
+        path: kernel
+        fetch-depth: 1
+
+    - name: Install overlay scripts into A17 tree
+      working-directory: .
+      run: |
+        mkdir -p kernel/.github/scripts
+        cp -a _overlay/.github/scripts/. kernel/.github/scripts/
+        chmod +x kernel/.github/scripts/*.sh kernel/.github/scripts/*.py
+        test -f kernel/include/linux/susfs.h
+        test -f kernel/fs/susfs.c
+        test -f kernel/build_kernel.sh
+        grep -F 'SUBLEVEL' kernel/Makefile | head -3
+        grep -F 'SUSFS_VERSION' kernel/include/linux/susfs.h | head -3
+        echo "GITHUB_WORKSPACE=${GITHUB_WORKSPACE}/kernel" >> "$GITHUB_ENV"
+
+    - name: Set up Environment
+      working-directory: .
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y bc bison build-essential ccache curl flex gawk \
+          git gnupg gperf imagemagick libncurses-dev \
+          lib32readline-dev lib32z1-dev liblz4-tool \
+          libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync \
+          schedtool squashfs-tools xsltproc zip zlib1g-dev python3
+
+    - name: Cache ccache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/ccache_mikernel
+        key: kernel-ccache-a17-resukisu42-susfs230-${{ github.event.inputs.device }}-${{ github.run_id }}
+        restore-keys: |
+          kernel-ccache-a17-resukisu42-susfs230-${{ github.event.inputs.device }}-
+          kernel-ccache-a17-
+
+    - name: Setup zyc-clang 16 (A17 toolchain)
+      working-directory: .
+      run: |
+        mkdir -p $HOME/zyc-clang
+        cd $HOME/zyc-clang
+        wget -q https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260807-release/Clang-16.0.6-20260807.tar.gz
+        tar -zxvf Clang-16.0.6-20260807.tar.gz
+
+    - name: Full SUSFS 2.3.0 backport (GKI overlay + 4.19 hooks)
+      run: |
+        .github/scripts/adapt-susfs230.sh
+        grep -Fq '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
+        grep -Fq 'susfs_is_current_proc_no_su()' fs/exec.c
+        grep -Fq 'filename_lookup(dfd, fname, lookup_flags, &path, NULL)' fs/open.c
+        grep -Fq 'filename_lookup(dfd, fname, lookup_flags, &path, NULL)' fs/stat.c
+        echo 'baseline_branch=AstideLabs/android17-aptusitu' >> "${GITHUB_WORKSPACE}/adapt-susfs230-proof.txt"
+
+    - name: Pin ReSukiSU v4.2.0-rc1 and sucompat 2.3 adapter
+      env:
+        RESUKISU_VERSION: v4.2.0-rc1
+        ENABLE_KPM: ${{ github.event.inputs.enable_kpm }}
+      run: |
+        python3 - <<'PY'
+        from pathlib import Path
+        import os
+
+        build = Path('build_kernel.sh')
+        text = build.read_text()
+        old = 'curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash'
+        version = 'v4.2.0-rc1'
+        new = f'curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/{version}/kernel/setup.sh" | bash -s -- {version}'
+
+        if old in text:
+            text = text.replace(old, new, 1)
+        elif version not in text:
+            raise SystemExit('ReSukiSU setup command layout changed; refusing blind patch')
+
+        marker = 'echo "[+] KernelSU setup finished."'
+        inject = marker + '\n    chmod +x .github/scripts/adapt-resukisu-sucompat230.sh\n    .github/scripts/adapt-resukisu-sucompat230.sh'
+        if marker not in text:
+            raise SystemExit('cannot find KernelSU setup finished marker')
+        if 'adapt-resukisu-sucompat230.sh' not in text:
+            text = text.replace(marker, inject, 1)
+
+        enable_kpm = os.environ.get('ENABLE_KPM', 'false').lower() == 'true'
+        cfg = '-e KSU_SUSFS'
+        if enable_kpm:
+            cfg_new = '-e KSU_SUSFS \\\n            -e KPM'
+        else:
+            cfg_new = '-e KSU_SUSFS \\\n            -d KPM'
+        if '-d KPM' not in text and '-e KPM' not in text:
+            if cfg not in text:
+                raise SystemExit('cannot find KSU_SUSFS config injection')
+            text = text.replace(cfg, cfg_new, 1)
+
+        build.write_text(text)
+        print('KPM enabled:', enable_kpm)
+        PY
+
+        echo 'KCFLAGS=-DMODULE_IMPORT_NS\(x\)= -DTWA_RESUME=1' >> "$GITHUB_ENV"
+        echo "ReSukiSU version: $RESUKISU_VERSION"
+        grep -nE 'ReSukiSU|adapt-resukisu|KPM' build_kernel.sh | head
+
+    - name: Build A17 miui/aosp with proven script
+      env:
+        INPUT_DEVICE: ${{ github.event.inputs.device }}
+        INPUT_TARGET_OS: ${{ github.event.inputs.target_os }}
+      run: |
+        chmod +x build_kernel.sh
+        DEVICE="${INPUT_DEVICE:-alioth}"
+        TARGET_OS="${INPUT_TARGET_OS:-miui}"
+        echo "Executing command: ./build_kernel.sh $DEVICE ksu $TARGET_OS"
+        ./build_kernel.sh "$DEVICE" ksu "$TARGET_OS"
+        grep -Fq '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
+        ls -lh APTKernel_*.zip || true
+
+    - name: Upload artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: A17-ReSukiSU42-SUSFS230-${{ github.event.inputs.device || 'alioth' }}-${{ github.event.inputs.target_os || 'miui' }}-${{ github.run_number }}
+        path: |
+          kernel/APTKernel_*.zip
+          kernel/adapt-susfs230.log
+          kernel/adapt-susfs230-proof.txt
+        if-no-files-found: warn
