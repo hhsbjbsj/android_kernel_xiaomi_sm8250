@@ -155,7 +155,7 @@ jobs:
         print('KPM enabled:', enable_kpm)
         PY
 
-        echo 'KCFLAGS=-DMODULE_IMPORT_NS\\(x\\)= -DTWA_RESUME=1' >> "$GITHUB_ENV"
+        echo 'KCFLAGS=-DMODULE_IMPORT_NS\(x\)= -DTWA_RESUME=1' >> "$GITHUB_ENV"
         echo "ReSukiSU version: $RESUKISU_VERSION"
         grep -nE 'ReSukiSU|adapt-resukisu|KPM' build_kernel.sh | head
 
