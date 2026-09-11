@@ -40,10 +40,11 @@ on:
       - '.github/scripts/rewrite-susfs230-hooks.py'
       - '.github/scripts/adapt-resukisu-sucompat230.sh'
       - '.github/scripts/adapt-resukisu-latest-setup.py'
+      - '.github/scripts/disable-anykernel-dtbo.py'
 
 jobs:
   build-kernel:
-    name: ReSukiSU latest + SUSFS 2.3.0 (${{ github.event.inputs.device || 'alioth' }})
+    name: ReSukiSU latest + SUSFS 2.3.0 nodtbo (${{ github.event.inputs.device || 'alioth' }})
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
@@ -86,7 +87,7 @@ jobs:
         grep -Fq 'filename_lookup(dfd, fname, lookup_flags, &path, NULL)' fs/open.c
         grep -Fq 'filename_lookup(dfd, fname, lookup_flags, &path, NULL)' fs/stat.c
 
-    - name: Use latest ReSukiSU main
+    - name: Use latest ReSukiSU main and keep stock dtbo
       run: |
         RESUKISU_SHA=$(git ls-remote https://github.com/ReSukiSU/ReSukiSU.git refs/heads/main | awk '{print $1}')
         if [ -z "$RESUKISU_SHA" ]; then
@@ -96,10 +97,9 @@ jobs:
         echo "RESUKISU_SHA=$RESUKISU_SHA" >> "$GITHUB_ENV"
         echo "Resolved ReSukiSU main: $RESUKISU_SHA"
         python3 .github/scripts/adapt-resukisu-latest-setup.py "$RESUKISU_SHA"
-        # Same escaping as the working 4.2 workflow. Extra backslashes turn
-        # MODULE_IMPORT_NS(x) into a dash subshell and break scripts/mod.
-        echo 'KCFLAGS=-DMODULE_IMPORT_NS\(x\)= -DTWA_RESUME=1' >> "$GITHUB_ENV"
-        grep -nE 'ReSukiSU|adapt-resukisu|-d KPM' build_kernel.sh | head
+        python3 .github/scripts/disable-anykernel-dtbo.py
+        echo 'KCFLAGS=-DMODULE_IMPORT_NS\\(x\\)= -DTWA_RESUME=1' >> "$GITHUB_ENV"
+        grep -nE 'ReSukiSU|dtbo flash|KPM' build_kernel.sh | head
 
     - name: Run proven build script
       env:
@@ -116,12 +116,13 @@ jobs:
         grep -Fq '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
         echo "resukisu_sha=${RESUKISU_SHA:-unknown}" >> adapt-susfs230-proof.txt
         echo 'resukisu_ref=main-latest' >> adapt-susfs230-proof.txt
+        echo 'dtbo_flash=disabled' >> adapt-susfs230-proof.txt
 
     - name: Upload artifacts
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: APT-ReSukiSU-latest-SUSFS230-${{ github.event.inputs.device || 'alioth' }}-${{ github.run_number }}
+        name: APT-ReSukiSU-latest-SUSFS230-nodtbo-${{ github.event.inputs.device || 'alioth' }}-${{ github.run_number }}
         path: |
           APTKernel_*.zip
           adapt-susfs230.log
