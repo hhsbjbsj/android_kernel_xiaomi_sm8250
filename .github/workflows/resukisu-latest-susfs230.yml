@@ -98,7 +98,7 @@ jobs:
         echo "Resolved ReSukiSU main: $RESUKISU_SHA"
         python3 .github/scripts/adapt-resukisu-latest-setup.py "$RESUKISU_SHA"
         python3 .github/scripts/disable-anykernel-dtbo.py
-        echo 'KCFLAGS=-DMODULE_IMPORT_NS\\(x\\)= -DTWA_RESUME=1' >> "$GITHUB_ENV"
+        echo 'KCFLAGS=-DMODULE_IMPORT_NS\(x\)= -DTWA_RESUME=1' >> "$GITHUB_ENV"
         grep -nE 'ReSukiSU|dtbo flash|KPM' build_kernel.sh | head
 
     - name: Run proven build script
