@@ -65,17 +65,9 @@ jobs:
         mkdir -p .github/scripts
         cp -a _overlay/.github/scripts/. .github/scripts/
         chmod +x .github/scripts/*.sh .github/scripts/*.py
-        echo "cwd=$(pwd)"
-        echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
         test -f include/linux/susfs.h
-        test -f include/linux/susfs_def.h
-        test -f fs/susfs.c
-        test -f fs/proc/task_mmu.c
         test -f build_kernel.sh
         test -f .github/scripts/adapt-resukisu-latest-setup.py
-        grep -F 'SUBLEVEL' Makefile | head -3
-        grep -F 'SUSFS_VERSION' include/linux/susfs.h | head -3
-        ls -l .github/scripts
 
     - name: Set up Environment
       run: |
@@ -105,16 +97,12 @@ jobs:
     - name: Full SUSFS 2.3.0 backport (GKI overlay + 4.19 hooks)
       run: |
         set -Eeuo pipefail
-        echo "cwd=$(pwd) workspace=$GITHUB_WORKSPACE"
-        ls -l include/linux/susfs.h include/linux/susfs_def.h fs/susfs.c fs/proc/task_mmu.c
         bash -x .github/scripts/adapt-susfs230.sh
         grep -Fq '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
         grep -Fq 'susfs_is_current_proc_no_su()' fs/exec.c
-        grep -Fq 'filename_lookup(dfd, fname, lookup_flags, &path, NULL)' fs/open.c
-        grep -Fq 'filename_lookup(dfd, fname, lookup_flags, &path, NULL)' fs/stat.c
         echo 'baseline_branch=AstideLabs/android17-aptusitu' >> adapt-susfs230-proof.txt
 
-    - name: Use latest ReSukiSU main
+    - name: Use latest ReSukiSU main and keep stock dtbo
       env:
         ENABLE_KPM: ${{ github.event.inputs.enable_kpm }}
       run: |
@@ -126,21 +114,36 @@ jobs:
         echo "RESUKISU_SHA=$RESUKISU_SHA" >> "$GITHUB_ENV"
         echo "Resolved ReSukiSU main: $RESUKISU_SHA"
         python3 .github/scripts/adapt-resukisu-latest-setup.py "$RESUKISU_SHA"
+        python3 - <<'PY'
+        from pathlib import Path
+        p = Path('build_kernel.sh')
+        t = p.read_text()
+        needle = 'echo "[+] AnyKernel3 adjusted successfully."'
+        inject = needle + '''
+    # HyperOS/MIUI first-splash: keep ROM dtbo, only replace boot Image+dtb
+    sed -i 's/^flash_generic dtbo;/# flash_generic dtbo;/' anykernel/anykernel.sh
+    grep -n 'flash_generic dtbo' anykernel/anykernel.sh || true
+    echo "[*] Disabled AnyKernel dtbo flash"'''
+        if 'Disabled AnyKernel dtbo flash' not in t:
+            if needle not in t:
+                raise SystemExit('cannot find AnyKernel3 adjusted marker')
+            t = t.replace(needle, inject, 1)
+        p.write_text(t)
+        print('patched build_kernel.sh to skip dtbo flash')
+        PY
         if [ "${ENABLE_KPM}" = "true" ]; then
           python3 - <<'PY'
         from pathlib import Path
         p = Path('build_kernel.sh')
-        t = p.read_text()
-        t = t.replace('-d KPM', '-e KPM')
+        t = p.read_text().replace('-d KPM', '-e KPM')
         t = t.replace('scripts/config --file "${OUT_DIR}/.config" -d KPM || true', 'scripts/config --file "${OUT_DIR}/.config" -e KPM || true')
         p.write_text(t)
-        print('KPM enabled')
         PY
         fi
         echo 'KCFLAGS=-DMODULE_IMPORT_NS\(x\)= -DTWA_RESUME=1' >> "$GITHUB_ENV"
-        grep -nE 'ReSukiSU|adapt-resukisu|KPM' build_kernel.sh | head
+        grep -nE 'ReSukiSU|dtbo flash|KPM' build_kernel.sh | head
 
-    - name: Build A17 miui/aosp with latest ReSukiSU
+    - name: Build A17 miui with latest ReSukiSU
       env:
         INPUT_DEVICE: ${{ github.event.inputs.device }}
         INPUT_TARGET_OS: ${{ github.event.inputs.target_os }}
@@ -150,18 +153,18 @@ jobs:
         TARGET_OS="${INPUT_TARGET_OS:-miui}"
         echo "Executing command: ./build_kernel.sh $DEVICE ksu $TARGET_OS"
         echo "ReSukiSU SHA: ${RESUKISU_SHA:-unknown}"
-        echo "KCFLAGS=$KCFLAGS"
         ./build_kernel.sh "$DEVICE" ksu "$TARGET_OS"
         grep -Fq '#define SUSFS_VERSION "v2.3.0"' include/linux/susfs.h
         echo "resukisu_sha=${RESUKISU_SHA:-unknown}" >> adapt-susfs230-proof.txt
         echo 'resukisu_ref=main-latest' >> adapt-susfs230-proof.txt
+        echo 'dtbo_flash=disabled' >> adapt-susfs230-proof.txt
         ls -lh APTKernel_*.zip || true
 
     - name: Upload artifacts
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: A17-ReSukiSU-latest-SUSFS230-${{ github.event.inputs.device || 'alioth' }}-${{ github.event.inputs.target_os || 'miui' }}-${{ github.run_number }}
+        name: A17-ReSukiSU-latest-SUSFS230-nodtbo-${{ github.event.inputs.device || 'alioth' }}-${{ github.event.inputs.target_os || 'miui' }}-${{ github.run_number }}
         path: |
           APTKernel_*.zip
           adapt-susfs230.log
