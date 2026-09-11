@@ -117,6 +117,7 @@ jobs:
         echo "resukisu_sha=${RESUKISU_SHA:-unknown}" >> adapt-susfs230-proof.txt
         echo 'resukisu_ref=main-latest' >> adapt-susfs230-proof.txt
         echo 'dtbo_flash=disabled' >> adapt-susfs230-proof.txt
+        echo 'flash_note=restore stock dtbo before flashing this zip' >> adapt-susfs230-proof.txt
 
     - name: Upload artifacts
       if: always()

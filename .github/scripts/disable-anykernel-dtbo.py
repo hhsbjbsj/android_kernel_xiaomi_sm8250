@@ -1,32 +1,51 @@
 #!/usr/bin/env python3
 """Stop AnyKernel3 from writing the dtbo partition.
 
-Xiaomi SM8250 HyperOS/MIUI first-splash hangs are commonly caused by
-flashing the kernel-built dtbo. Keep dtbo.img inside the zip so the
-MIUI/AOSP file picker still works, but comment flash_generic dtbo.
+AstideLabs AnyKernel3:
+- master (A16 build_kernel.sh): dtbo flash is already commented
+- kona  (A17 build_kernel.sh): flash_generic dtbo is ENABLED
+
+A17 kona zip is what bricks first-splash. After that, an A16 zip that
+does not flash dtbo cannot repair the partition. Patch both trees after
+the AnyKernel clone/adjust line.
 """
 from pathlib import Path
-import sys
 
 build = Path("build_kernel.sh")
 text = build.read_text()
-needle = 'echo "[+] AnyKernel3 adjusted successfully."'
-inject = needle + '''
-    # Keep ROM/stock dtbo. Kernel-built dtbo on SM8250 hangs on first splash.
-    sed -i 's/^flash_generic dtbo;/# flash_generic dtbo;/' anykernel/anykernel.sh
-    sed -i 's/^flash_generic dtb;/# flash_generic dtb;/' anykernel/anykernel.sh || true
-    if grep -qE '^flash_generic dtbo;' anykernel/anykernel.sh; then
-        echo 'failed to disable AnyKernel dtbo flash' >&2
+PATCH_MARK = "Disabled AnyKernel dtbo flash"
+
+inject_block = r'''
+    # SM8250 HyperOS/MIUI: kernel-built dtbo hangs on first splash.
+    # Keep dtbo.img in the zip (AK3 existence check), but never flash it.
+    if [ ! -f anykernel/anykernel.sh ]; then
+        echo "[!] anykernel/anykernel.sh missing after clone" >&2
         exit 1
     fi
+    sed -i \
+      -e 's/^flash_generic dtbo;/# flash_generic dtbo;/' \
+      -e 's/^flash_dtbo;/# flash_dtbo;/' \
+      -e 's|^[[:space:]]*mv $AKHOME/kernels/$os/dtbo.img|# mv dtbo.img|' \
+      anykernel/anykernel.sh
     echo "[*] Disabled AnyKernel dtbo flash"
-    grep -n 'flash_generic' anykernel/anykernel.sh || true'''
+    grep -nE 'flash_generic|flash_dtbo|dtbo.img' anykernel/anykernel.sh || true
+    if grep -qE '^flash_generic dtbo;|^flash_dtbo;' anykernel/anykernel.sh; then
+        echo "failed to disable AnyKernel dtbo flash" >&2
+        exit 1
+    fi
+'''
 
-if "Disabled AnyKernel dtbo flash" not in text:
-    if needle not in text:
-        raise SystemExit("cannot find AnyKernel3 adjusted marker")
-    text = text.replace(needle, inject, 1)
-    build.write_text(text)
-    print("patched build_kernel.sh to skip dtbo flash")
-else:
+if PATCH_MARK in text:
     print("build_kernel.sh already skips dtbo flash")
+else:
+    markers = [
+        'echo "[*] AnyKernel3 adjusted successfully."',
+        'echo "[+] AnyKernel3 adjusted successfully."',
+        'echo "[+] AnyKernel3 cloned successfully."',
+        'echo "[*] AnyKernel3 cloned successfully."',
+    ]
+    found = next((m for m in markers if m in text), None)
+    if not found:
+        raise SystemExit("cannot find AnyKernel3 clone/adjust marker in build_kernel.sh")
+    build.write_text(text.replace(found, found + inject_block, 1))
+    print("patched build_kernel.sh after:", found)
