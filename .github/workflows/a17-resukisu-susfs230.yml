@@ -39,7 +39,7 @@ on:
 
 jobs:
   build-kernel:
-    name: A17 ReSukiSU-latest SUSFS2.3 ${{ github.event.inputs.device }} ${{ github.event.inputs.target_os }} KPM=${{ github.event.inputs.enable_kpm }}
+    name: A17 extras ${{ github.event.inputs.device }} ${{ github.event.inputs.target_os }} KPM=${{ github.event.inputs.enable_kpm }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
@@ -69,6 +69,7 @@ jobs:
         test -f build_kernel.sh
         test -f .github/scripts/adapt-resukisu-latest-setup.py
         test -f .github/scripts/disable-anykernel-dtbo.py
+        test -f .github/scripts/apply-boot-extras.py
 
     - name: Set up Environment
       run: |
@@ -83,7 +84,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ~/.cache/ccache_mikernel
-        key: kernel-ccache-a17-resukisu-latest-susfs230-${{ github.event.inputs.device }}-${{ github.run_id }}
+        key: kernel-ccache-a17-extras-${{ github.event.inputs.device }}-${{ github.run_id }}
         restore-keys: |
           kernel-ccache-a17-resukisu-latest-susfs230-${{ github.event.inputs.device }}-
           kernel-ccache-a17-
@@ -95,7 +96,7 @@ jobs:
         wget -q https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260807-release/Clang-16.0.6-20260807.tar.gz
         tar -zxvf Clang-16.0.6-20260807.tar.gz
 
-    - name: Full SUSFS 2.3.0 backport (GKI overlay + 4.19 hooks)
+    - name: Full SUSFS 2.3.0 backport (keep in-tree 4.19 core)
       run: |
         set -Eeuo pipefail
         bash -x .github/scripts/adapt-susfs230.sh
@@ -103,7 +104,7 @@ jobs:
         grep -Fq 'susfs_is_current_proc_no_su()' fs/exec.c
         echo 'baseline_branch=AstideLabs/android17-aptusitu' >> adapt-susfs230-proof.txt
 
-    - name: Use latest ReSukiSU main and keep stock dtbo
+    - name: Use latest ReSukiSU main, extras, keep stock dtbo
       env:
         ENABLE_KPM: ${{ github.event.inputs.enable_kpm }}
       run: |
@@ -116,6 +117,7 @@ jobs:
         echo "Resolved ReSukiSU main: $RESUKISU_SHA"
         python3 .github/scripts/adapt-resukisu-latest-setup.py "$RESUKISU_SHA"
         python3 .github/scripts/disable-anykernel-dtbo.py
+        python3 .github/scripts/apply-boot-extras.py
         if [ "${ENABLE_KPM}" = "true" ]; then
           python3 - <<'PY'
         from pathlib import Path
@@ -126,9 +128,9 @@ jobs:
         PY
         fi
         echo 'KCFLAGS=-DMODULE_IMPORT_NS\(x\)= -DTWA_RESUME=1' >> "$GITHUB_ENV"
-        grep -nE 'ReSukiSU|dtbo flash|KPM' build_kernel.sh | head
+        grep -nE 'ReSukiSU|dtbo flash|REKERNEL|boot extras|KPM' build_kernel.sh | head -n 40
 
-    - name: Build A17 miui with latest ReSukiSU
+    - name: Build A17 miui with latest ReSukiSU + extras
       env:
         INPUT_DEVICE: ${{ github.event.inputs.device }}
         INPUT_TARGET_OS: ${{ github.event.inputs.target_os }}
@@ -143,14 +145,19 @@ jobs:
         echo "resukisu_sha=${RESUKISU_SHA:-unknown}" >> adapt-susfs230-proof.txt
         echo 'resukisu_ref=main-latest' >> adapt-susfs230-proof.txt
         echo 'dtbo_flash=disabled' >> adapt-susfs230-proof.txt
-        echo 'flash_note=restore stock dtbo before flashing this zip' >> adapt-susfs230-proof.txt
+        echo 'droidspaces=skipped' >> adapt-susfs230-proof.txt
+        echo 'network_enhance=true' >> adapt-susfs230-proof.txt
+        echo 'tcp_cc=bbr,cubic,westwood,bic,htcp (brutal skipped, needs 5.10+)' >> adapt-susfs230-proof.txt
+        echo 'adios=4.19 in-tree deadline/kyber/bfq (adios scheduler is 5.10+)' >> adapt-susfs230-proof.txt
+        echo 'rekernel=true' >> adapt-susfs230-proof.txt
+        echo 'bbg=true' >> adapt-susfs230-proof.txt
         ls -lh APTKernel_*.zip || true
 
     - name: Upload artifacts
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: A17-ReSukiSU-latest-SUSFS230-nodtbo-${{ github.event.inputs.device || 'alioth' }}-${{ github.event.inputs.target_os || 'miui' }}-${{ github.run_number }}
+        name: A17-ReSukiSU-SUSFS230-extras-nodtbo-${{ github.event.inputs.device || 'alioth' }}-${{ github.event.inputs.target_os || 'miui' }}-${{ github.run_number }}
         path: |
           APTKernel_*.zip
           adapt-susfs230.log
