@@ -10,10 +10,12 @@ Optimizations:
   2. Power-efficient workqueues:
      Enable CONFIG_WQ_POWER_EFFICIENT and CONFIG_WQ_POWER_EFFICIENT_DEFAULT to route unbound
      workqueues to Cortex-A55 little cores rather than waking up big/prime cores.
-  3. Disable aggressive Qualcomm CPU Boost:
-     Disable CONFIG_CPU_BOOST to eliminate touch/input boost frequency spikes (which pegs
-     CPU cores at 1.4-1.8GHz for 40-100ms on every screen tap/scroll). Modern EAS and
-     Schedutil handle UI scaling smoothly without wasting ~300-500mW.
+  3. Tame Qualcomm CPU touch boost without breaking linker symbols:
+     Touchscreen drivers (e.g. focaltech_spi/focaltech_core.c) unconditionally link to
+     touch_irq_boost(). Instead of disabling CONFIG_CPU_BOOST (which causes undefined symbol
+     link error), we keep CONFIG_CPU_BOOST=y but patch touch_irq_boost() to a no-op (return)
+     and set input_boost_ms to 0. This neutralizes the 1.4-1.8GHz touch spikes completely
+     while guaranteeing 100% clean compilation.
   4. Schedutil governor rate limit tuning:
      Increase UP_RATE_LIMIT from 500us to 1000us (filters out transient micro-spikes) and
      decrease DOWN_RATE_LIMIT to 10000us (accelerates ramp-down to low power freqs).
@@ -25,19 +27,37 @@ Optimizations:
      Enable mq-deadline/kyber as default for UFS 3.1 storage; disable heavy BFQ to save
      CPU cycles on disk I/O.
   7. Baseband Guard (BBG) and essential Wireguard / networking retained.
+  8. Ccache acceleration:
+     Configure ccache with 20G cache limit and print statistics before and after build.
 """
 
 from pathlib import Path
+
+# 1. Tame cpu-boost source code directly so touch_irq_boost is a no-op and input_boost_ms=0
+cb = Path('drivers/cpufreq/cpu-boost.c')
+if cb.exists():
+    cbt = cb.read_text(encoding='utf-8')
+    old_fn = 'void touch_irq_boost(void)\n{\n'
+    new_fn = 'void touch_irq_boost(void)\n{\n\treturn;\n'
+    if old_fn in cbt:
+        cbt = cbt.replace(old_fn, new_fn, 1)
+    cbt = cbt.replace('static unsigned int input_boost_ms = 40;', 'static unsigned int input_boost_ms = 0;')
+    cb.write_text(cbt, encoding='utf-8')
+    print('[*] Tamed cpu-boost.c: neutralized touch_irq_boost and set input_boost_ms=0')
 
 build = Path('build_kernel.sh')
 text = build.read_text(encoding='utf-8')
 
 # Ensure MIUI block does NOT have REKERNEL enabled
-# If someone replaced -d with -e previously, revert back to -d
 text = text.replace(
     '-e REKERNEL \\\n            -e REKERNEL_NETWORK',
     '-d REKERNEL \\\n            -d REKERNEL_NETWORK',
 )
+
+# Tune ccache in build_kernel.sh
+ccache_marker = 'mkdir -p "$CCACHE_DIR"'
+if ccache_marker in text and 'ccache -M 20G' not in text:
+    text = text.replace(ccache_marker, ccache_marker + '\nexport CCACHE_COMPRESS=1\nccache -M 20G || true\nccache -s || true', 1)
 
 needle = '    # We always need to re-evaluate dependencies because BBG is injected unconditionally'
 inject = r'''    echo "[*] Injecting SM8250 power-saving extras (WQ_POWER_EFFICIENT, Westwood, mq-deadline, BBG)..."
@@ -56,9 +76,10 @@ inject = r'''    echo "[*] Injecting SM8250 power-saving extras (WQ_POWER_EFFICI
         -e WQ_POWER_EFFICIENT \
         -e WQ_POWER_EFFICIENT_DEFAULT || true
 
-    # [Power 2] Disable Qualcomm CPU touch boost (eliminates 1.4-1.8GHz spikes on every touch)
+    # [Power 2] Keep CPU_BOOST=y so focaltech_core / input drivers link cleanly,
+    # but the driver has been tamed via source patch (touch_irq_boost no-op + input_boost_ms=0)
     scripts/config --file "${OUT_DIR}/.config" \
-        -d CPU_BOOST || true
+        -e CPU_BOOST || true
 
     # [Power 3] Tune Schedutil governor rate limits (less jittery up-scale, faster down-scale)
     scripts/config --file "${OUT_DIR}/.config" \

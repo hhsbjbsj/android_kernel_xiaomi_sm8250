@@ -91,10 +91,21 @@ jobs:
         path: ~/.cache/ccache_mikernel
         key: kernel-ccache-a17-extras-${{ github.event.inputs.device || 'alioth' }}-${{ github.run_id }}
         restore-keys: |
+          kernel-ccache-a17-extras-${{ github.event.inputs.device || 'alioth' }}-
           kernel-ccache-a17-resukisu-latest-susfs230-${{ github.event.inputs.device || 'alioth' }}-
+          kernel-ccache-a17-extras-
           kernel-ccache-a17-
+        save-always: true
+
+    - name: Cache Clang Toolchain
+      uses: actions/cache@v4
+      id: cache-clang
+      with:
+        path: /home/runner/zyc-clang
+        key: zyc-clang-16.0.6-20260807
 
     - name: Setup zyc-clang 16 (A17 toolchain)
+      if: steps.cache-clang.outputs.cache-hit != 'true'
       run: |
         mkdir -p $HOME/zyc-clang
         cd $HOME/zyc-clang
