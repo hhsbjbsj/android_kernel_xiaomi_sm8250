@@ -162,11 +162,9 @@ jobs:
         echo 'resukisu_ref=main-latest' >> adapt-susfs230-proof.txt
         echo 'dtbo_flash=disabled' >> adapt-susfs230-proof.txt
         echo 'droidspaces=skipped' >> adapt-susfs230-proof.txt
-        echo 'network_enhance=true' >> adapt-susfs230-proof.txt
-        echo 'tcp_cc=westwood (default), cubic, bbr' >> adapt-susfs230-proof.txt
-        echo 'io_sched=mq-deadline (default), kyber (bfq disabled)' >> adapt-susfs230-proof.txt
-        echo 'rekernel=disabled on miui (avoids millet conflict), enabled on aosp' >> adapt-susfs230-proof.txt
-        echo 'power_profile=WQ_POWER_EFFICIENT=y, CPU_BOOST=n, schedutil_up=1000, schedutil_down=10000' >> adapt-susfs230-proof.txt
+        echo 'tcp_cc=cubic (default), westwood, bbr' >> adapt-susfs230-proof.txt
+        echo 'io_sched=deadline (default), kyber, bfq' >> adapt-susfs230-proof.txt
+        echo 'rekernel=true' >> adapt-susfs230-proof.txt
         echo 'bbg=true' >> adapt-susfs230-proof.txt
         ls -lh APTKernel_*.zip || true
 
