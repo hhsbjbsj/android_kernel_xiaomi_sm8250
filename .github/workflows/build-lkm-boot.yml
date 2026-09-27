@@ -64,11 +64,9 @@ jobs:
 
     - name: Apply Symbol Patch & Configure Kernel Tree
       run: |
-        # Apply symbol patch to KernelSU and ksuinit
         python3 _ci/.github/scripts/patch-lkm-for-alioth.py
 
         cd kernel
-        # Match target kernel release 4.19.325
         sed -i 's/^SUBLEVEL = .*/SUBLEVEL = 325/' Makefile
         head -n 5 Makefile
 
@@ -78,10 +76,8 @@ jobs:
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-        # Defconfig with Clang explicitly passed
         make -j$(nproc) CC=clang HOSTCC=clang LLVM=1 LLVM_IAS=1 alioth_defconfig
 
-        # Configure vermagic and module requirements
         scripts/config --file .config \
           --set-str LOCALVERSION "-Ikun-KirinNova" \
           -e MODULES \
@@ -97,25 +93,9 @@ jobs:
           -e KSU_HACK_ARM64_BRANCH_LINK
 
         make CC=clang HOSTCC=clang LLVM=1 LLVM_IAS=1 olddefconfig
-        mkdir -p include/generated
-        cat << 'EOF' > include/generated/compile.h
-/* SPDX-License-Identifier: GPL-2.0 */
-#define UTS_MACHINE "arm64"
-#define UTS_VERSION "#1 SMP PREEMPT Sat Sep 26 11:54:08 UTC 2026"
-#define LINUX_COMPILE_BY "runner"
-#define LINUX_COMPILE_HOST "runnervmtr4k5"
-#define LINUX_COMPILER "ZyC clang version 16.0.6, LLD 16.0.6"
-EOF
-
         make -j$(nproc) CC=clang HOSTCC=clang LLVM=1 LLVM_IAS=1 prepare modules_prepare
 
-        # Generate SELinux headers (flask.h, av_permissions.h)
-        clang -Iinclude/uapi -Iinclude -Isecurity/selinux/include scripts/selinux/genheaders/genheaders.c -o /tmp/genheaders
-        /tmp/genheaders security/selinux/flask.h security/selinux/av_permissions.h
-        cp -f security/selinux/flask.h security/selinux/include/flask.h
-        cp -f security/selinux/av_permissions.h security/selinux/include/av_permissions.h
-        echo "[+] SELinux headers generated successfully:"
-        ls -la security/selinux/flask.h security/selinux/include/flask.h
+        python3 ../_ci/.github/scripts/patch-lkm-for-alioth.py
 
     - name: Build ksu.ko
       run: |
@@ -129,15 +109,6 @@ EOF
         KSU_DIR="$GITHUB_WORKSPACE/KernelSU"
 
         cd "$KERNEL_DIR"
-        mkdir -p include/generated
-        cat << 'EOF' > include/generated/compile.h
-/* SPDX-License-Identifier: GPL-2.0 */
-#define UTS_MACHINE "arm64"
-#define UTS_VERSION "#1 SMP PREEMPT Sat Sep 26 11:54:08 UTC 2026"
-#define LINUX_COMPILE_BY "runner"
-#define LINUX_COMPILE_HOST "runnervmtr4k5"
-#define LINUX_COMPILER "ZyC clang version 16.0.6, LLD 16.0.6"
-EOF
 
         make -j$(nproc) \
           ARCH=arm64 \
