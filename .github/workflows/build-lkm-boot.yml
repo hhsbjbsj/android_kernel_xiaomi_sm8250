@@ -1,0 +1,159 @@
+name: Build KernelSU LKM (backslashxx) for K40
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - android17-aptusitu-susfs230
+    paths:
+      - '.github/workflows/build-lkm-boot.yml'
+      - '.github/scripts/patch-lkm-for-alioth.py'
+
+jobs:
+  build-lkm:
+    name: Build LKM ksu.ko & ksuinit (4.19.325-Ikun-KirinNova)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+    - name: Checkout CI scripts from current repo
+      uses: actions/checkout@v4
+      with:
+        path: _ci
+        fetch-depth: 1
+
+    - name: Checkout kernel tree (AstideLabs SM8250)
+      uses: actions/checkout@v4
+      with:
+        repository: AstideLabs/android_kernel_xiaomi_sm8250
+        ref: android17-aptusitu
+        path: kernel
+        fetch-depth: 1
+
+    - name: Checkout backslashxx/KernelSU (staging-ksyscall-legacy)
+      uses: actions/checkout@v4
+      with:
+        repository: backslashxx/KernelSU
+        ref: staging-ksyscall-legacy
+        path: KernelSU
+        fetch-depth: 1
+
+    - name: Set up Environment
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y bc bison build-essential ccache curl flex gawk \
+          git gnupg gperf imagemagick libncurses-dev \
+          lib32readline-dev lib32z1-dev liblz4-tool \
+          libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync \
+          schedtool squashfs-tools xsltproc zip zlib1g-dev python3 libelf-dev
+
+    - name: Cache Clang Toolchain
+      uses: actions/cache@v4
+      id: cache-clang
+      with:
+        path: /home/runner/zyc-clang
+        key: zyc-clang-16.0.6-20260807
+
+    - name: Setup zyc-clang 16
+      if: steps.cache-clang.outputs.cache-hit != 'true'
+      run: |
+        mkdir -p $HOME/zyc-clang
+        cd $HOME/zyc-clang
+        wget -q https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260807-release/Clang-16.0.6-20260807.tar.gz
+        tar -zxvf Clang-16.0.6-20260807.tar.gz
+
+    - name: Apply Symbol Patch & Configure Kernel Tree
+      run: |
+        # Apply symbol patch to KernelSU and ksuinit
+        python3 _ci/.github/scripts/patch-lkm-for-alioth.py
+
+        cd kernel
+        # Match target kernel release 4.19.325
+        sed -i 's/^SUBLEVEL = .*/SUBLEVEL = 325/' Makefile
+        head -n 5 Makefile
+
+        export PATH="$HOME/zyc-clang/bin:$PATH"
+        export ARCH=arm64
+        export SUBARCH=arm64
+        export CROSS_COMPILE=aarch64-linux-gnu-
+        export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+
+        # Defconfig
+        make alioth_defconfig
+
+        # Configure vermagic and module requirements
+        scripts/config --file .config \
+          --set-str LOCALVERSION "-Ikun-KirinNova" \
+          -e MODULES \
+          -e MODULE_UNLOAD \
+          -e MODVERSIONS \
+          -e KALLSYMS \
+          -e KALLSYMS_ALL \
+          -e KPROBES \
+          -e KRETPROBES \
+          -e SECURITY_SELINUX \
+          -e SECCOMP \
+          -e KSU \
+          -e KSU_HACK_ARM64_BRANCH_LINK
+
+        make olddefconfig
+        make -j$(nproc) modules_prepare
+
+    - name: Build ksu.ko
+      run: |
+        export PATH="$HOME/zyc-clang/bin:$PATH"
+        export ARCH=arm64
+        export SUBARCH=arm64
+        export CROSS_COMPILE=aarch64-linux-gnu-
+        export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+
+        KERNEL_DIR="$GITHUB_WORKSPACE/kernel"
+        KSU_DIR="$GITHUB_WORKSPACE/KernelSU"
+
+        cd "$KERNEL_DIR"
+        make -j$(nproc) \
+          ARCH=arm64 \
+          SUBARCH=arm64 \
+          CC="clang" \
+          HOSTCC="clang" \
+          CROSS_COMPILE=aarch64-linux-gnu- \
+          CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+          LLVM=1 \
+          M="$KSU_DIR/kernel" \
+          modules
+
+        test -f "$KSU_DIR/kernel/ksu.ko" || { echo "ksu.ko not found!"; exit 1; }
+        echo "[+] Built ksu.ko successfully!"
+        modinfo "$KSU_DIR/kernel/ksu.ko" || true
+        llvm-strip --strip-debug "$KSU_DIR/kernel/ksu.ko" -o "$KSU_DIR/kernel/ksu_stripped.ko"
+        cp "$KSU_DIR/kernel/ksu_stripped.ko" "$GITHUB_WORKSPACE/ksu.ko"
+
+    - name: Build ksuinit for aarch64
+      run: |
+        rustup default stable
+        rustup update stable
+        rustup target add aarch64-linux-android
+        
+        # Locate Android NDK for cargo linker
+        if [ -n "$ANDROID_NDK_LATEST_HOME" ]; then
+          NDK_DIR="$ANDROID_NDK_LATEST_HOME"
+        else
+          NDK_DIR=$(find /usr/local/lib/android/sdk/ndk -maxdepth 1 -mindepth 1 | sort -V | tail -n 1)
+        fi
+        echo "Using NDK: $NDK_DIR"
+        export PATH="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+        export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=aarch64-linux-android30-clang
+
+        cd "$GITHUB_WORKSPACE/KernelSU"
+        cargo build --package ksuinit --target=aarch64-linux-android --release
+        
+        test -f target/aarch64-linux-android/release/ksuinit || { echo "ksuinit not found!"; exit 1; }
+        cp target/aarch64-linux-android/release/ksuinit "$GITHUB_WORKSPACE/ksuinit"
+        echo "[+] Built ksuinit successfully!"
+
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: KSU-LKM-Alioth-IkunKirinNova-${{ github.run_number }}
+        path: |
+          ksu.ko
+          ksuinit
