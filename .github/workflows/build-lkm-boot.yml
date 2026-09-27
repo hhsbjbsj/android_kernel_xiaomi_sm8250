@@ -101,6 +101,14 @@ jobs:
         touch include/generated/compile.h
         make -j$(nproc) CC=clang HOSTCC=clang LLVM=1 LLVM_IAS=1 prepare modules_prepare
 
+        # Generate SELinux headers (flask.h, av_permissions.h)
+        clang -Iinclude/uapi -Iinclude -Isecurity/selinux/include scripts/selinux/genheaders/genheaders.c -o /tmp/genheaders
+        /tmp/genheaders security/selinux/flask.h security/selinux/av_permissions.h
+        cp -f security/selinux/flask.h security/selinux/include/flask.h
+        cp -f security/selinux/av_permissions.h security/selinux/include/av_permissions.h
+        echo "[+] SELinux headers generated successfully:"
+        ls -la security/selinux/flask.h security/selinux/include/flask.h
+
     - name: Build ksu.ko
       run: |
         export PATH="$HOME/zyc-clang/bin:$PATH"
