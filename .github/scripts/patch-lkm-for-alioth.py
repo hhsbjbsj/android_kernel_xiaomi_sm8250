@@ -106,14 +106,12 @@ if "obj-m := ksu.o" not in mk_text:
 ksuinit_lib = Path("KernelSU/userspace/ksuinit/src/lib.rs")
 if ksuinit_lib.exists():
     kl_text = ksuinit_lib.read_text(encoding="utf-8")
-    # Soften kptr_restrict read/write error
     old_kptr = 'let value = fs::read_to_string("/proc/sys/kernel/kptr_restrict")?;\n        fs::write("/proc/sys/kernel/kptr_restrict", "1")?;'
     new_kptr = 'let value = fs::read_to_string("/proc/sys/kernel/kptr_restrict").unwrap_or_default();\n        let _ = fs::write("/proc/sys/kernel/kptr_restrict", "1");'
     if old_kptr in kl_text:
         kl_text = kl_text.replace(old_kptr, new_kptr)
         print("[+] Softened kptr_restrict in ksuinit")
     
-    # Soften kallsyms failure so init_module is always attempted
     old_parse = '.context("Cannot parse kallsyms")?;'
     new_parse = '.ok(); // Do not fail if kallsyms unreadable, symbols are in-module'
     if old_parse in kl_text:
@@ -122,15 +120,21 @@ if ksuinit_lib.exists():
         
     ksuinit_lib.write_text(kl_text, encoding="utf-8")
 
-# 4. Patch kernel_includes.h to avoid fatal error on missing generated/compile.h
+# 4. Patch kernel_includes.h and ksu.c for UTS definitions
 ki_path = Path("KernelSU/kernel/kernel_includes.h")
 if ki_path.exists():
     ki_text = ki_path.read_text(encoding="utf-8")
-    ki_text = ki_text.replace(
-        "#include <generated/compile.h>",
-        "#if __has_include(<generated/compile.h>)\n#include <generated/compile.h>\n#endif"
-    )
+    if "UTS_MACHINE" not in ki_text:
+        ki_text = "#ifndef UTS_MACHINE\n#define UTS_MACHINE \"arm64\"\n#endif\n" + ki_text
     ki_path.write_text(ki_text, encoding="utf-8")
-    print("[+] Patched kernel_includes.h for generated/compile.h!")
+    print("[+] Patched kernel_includes.h for UTS_MACHINE!")
+
+ksu_c = Path("KernelSU/kernel/ksu.c")
+if ksu_c.exists():
+    kc_text = ksu_c.read_text(encoding="utf-8")
+    if "UTS_MACHINE" not in kc_text[:1000]:
+        kc_text = "#ifndef UTS_MACHINE\n#define UTS_MACHINE \"arm64\"\n#endif\n" + kc_text
+        ksu_c.write_text(kc_text, encoding="utf-8")
+        print("[+] Patched ksu.c for UTS_MACHINE!")
 
 print("[+] LKM patch completed successfully.")

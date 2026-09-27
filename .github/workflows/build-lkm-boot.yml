@@ -98,7 +98,15 @@ jobs:
 
         make CC=clang HOSTCC=clang LLVM=1 LLVM_IAS=1 olddefconfig
         mkdir -p include/generated
-        touch include/generated/compile.h
+        cat << 'EOF' > include/generated/compile.h
+/* SPDX-License-Identifier: GPL-2.0 */
+#define UTS_MACHINE "arm64"
+#define UTS_VERSION "#1 SMP PREEMPT Sat Sep 26 11:54:08 UTC 2026"
+#define LINUX_COMPILE_BY "runner"
+#define LINUX_COMPILE_HOST "runnervmtr4k5"
+#define LINUX_COMPILER "ZyC clang version 16.0.6, LLD 16.0.6"
+EOF
+
         make -j$(nproc) CC=clang HOSTCC=clang LLVM=1 LLVM_IAS=1 prepare modules_prepare
 
         # Generate SELinux headers (flask.h, av_permissions.h)
@@ -122,7 +130,14 @@ jobs:
 
         cd "$KERNEL_DIR"
         mkdir -p include/generated
-        touch include/generated/compile.h
+        cat << 'EOF' > include/generated/compile.h
+/* SPDX-License-Identifier: GPL-2.0 */
+#define UTS_MACHINE "arm64"
+#define UTS_VERSION "#1 SMP PREEMPT Sat Sep 26 11:54:08 UTC 2026"
+#define LINUX_COMPILE_BY "runner"
+#define LINUX_COMPILE_HOST "runnervmtr4k5"
+#define LINUX_COMPILER "ZyC clang version 16.0.6, LLD 16.0.6"
+EOF
 
         make -j$(nproc) \
           ARCH=arm64 \
@@ -148,17 +163,24 @@ jobs:
         rustup update stable
         rustup target add aarch64-linux-android
         
-        # Locate Android NDK for cargo linker
-        if [ -n "$ANDROID_NDK_LATEST_HOME" ]; then
-          NDK_DIR="$ANDROID_NDK_LATEST_HOME"
-        else
-          NDK_DIR=$(find /usr/local/lib/android/sdk/ndk -maxdepth 1 -mindepth 1 | sort -V | tail -n 1)
+        if [ -z "$ANDROID_NDK_HOME" ]; then
+          if [ -n "$ANDROID_NDK_LATEST_HOME" ]; then
+            export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          else
+            export ANDROID_NDK_HOME=$(find /usr/local/lib/android/sdk/ndk -maxdepth 1 -mindepth 1 | sort -V | tail -n 1)
+          fi
         fi
-        echo "Using NDK: $NDK_DIR"
-        export PATH="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
-        export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=aarch64-linux-android30-clang
+        echo "Using NDK: $ANDROID_NDK_HOME"
 
         cd "$GITHUB_WORKSPACE/KernelSU"
+        chmod +x .github/scripts/setup-rust-build.sh
+        source .github/scripts/setup-rust-build.sh aarch64-linux-android 26
+        BUILTINS="$($CLANG_PATH --print-resource-dir)/lib/linux/libclang_rt.builtins-aarch64-android.a"
+        if [ ! -f "$BUILTINS" ]; then
+          BUILTINS=$(find "$ANDROID_NDK_HOME" -name "libclang_rt.builtins-aarch64*.a" | head -n 1)
+        fi
+        echo "Using BUILTINS: $BUILTINS"
+        export RUSTFLAGS="-C target-feature=+crt-static -C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wno-unused-command-line-argument -C link-arg=$BUILTINS"
         cargo build --package ksuinit --target=aarch64-linux-android --release
         
         test -f target/aarch64-linux-android/release/ksuinit || { echo "ksuinit not found!"; exit 1; }
