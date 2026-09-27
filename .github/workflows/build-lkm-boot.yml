@@ -97,7 +97,9 @@ jobs:
           -e KSU_HACK_ARM64_BRANCH_LINK
 
         make CC=clang HOSTCC=clang LLVM=1 LLVM_IAS=1 olddefconfig
-        make -j$(nproc) CC=clang HOSTCC=clang LLVM=1 LLVM_IAS=1 modules_prepare
+        mkdir -p include/generated
+        touch include/generated/compile.h
+        make -j$(nproc) CC=clang HOSTCC=clang LLVM=1 LLVM_IAS=1 prepare modules_prepare
 
     - name: Build ksu.ko
       run: |
@@ -111,6 +113,9 @@ jobs:
         KSU_DIR="$GITHUB_WORKSPACE/KernelSU"
 
         cd "$KERNEL_DIR"
+        mkdir -p include/generated
+        touch include/generated/compile.h
+
         make -j$(nproc) \
           ARCH=arm64 \
           SUBARCH=arm64 \

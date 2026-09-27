@@ -122,4 +122,15 @@ if ksuinit_lib.exists():
         
     ksuinit_lib.write_text(kl_text, encoding="utf-8")
 
+# 4. Patch kernel_includes.h to avoid fatal error on missing generated/compile.h
+ki_path = Path("KernelSU/kernel/kernel_includes.h")
+if ki_path.exists():
+    ki_text = ki_path.read_text(encoding="utf-8")
+    ki_text = ki_text.replace(
+        "#include <generated/compile.h>",
+        "#if __has_include(<generated/compile.h>)\n#include <generated/compile.h>\n#endif"
+    )
+    ki_path.write_text(ki_text, encoding="utf-8")
+    print("[+] Patched kernel_includes.h for generated/compile.h!")
+
 print("[+] LKM patch completed successfully.")
