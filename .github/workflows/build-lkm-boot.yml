@@ -99,8 +99,8 @@ jobs:
           --disable CFI_CLANG \
           --disable SHADOW_CALL_STACK \
           -m KSU \
-          -e KSU_HACK_ARM64_BRANCH_LINK \
-          --disable KSU_TAMPER_SYSCALL_TABLE
+          --disable KSU_HACK_ARM64_BRANCH_LINK \
+          -e KSU_TAMPER_SYSCALL_TABLE
 
         make CC=clang HOSTCC=clang LLVM=1 LLVM_IAS=1 olddefconfig
         make -j$(nproc) CC=clang HOSTCC=clang LLVM=1 LLVM_IAS=1 prepare modules_prepare
