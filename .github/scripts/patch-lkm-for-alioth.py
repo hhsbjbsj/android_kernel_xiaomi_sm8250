@@ -204,6 +204,8 @@ if vp_h.exists():
 sct_c = ksu_root / "kernel/hook/syscall_table_hook_arm64.c"
 if sct_c.exists():
     sct_text = sct_c.read_text(encoding="utf-8")
+    if "#pragma once" not in sct_text:
+        sct_text = "#pragma once\n" + sct_text
     start_marker = "#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0)"
     end_marker = "#else // END OF 4.19+ SYSCALL HANDLERS"
 
@@ -477,7 +479,15 @@ ksu_c = ksu_root / "kernel/ksu.c"
 if ksu_c.exists():
     kc_text = ksu_c.read_text(encoding="utf-8")
     
-    # Ensure TAMPER_SYSCALL_TABLE is defined and HACK_ARM64_BRANCH_LINK is undef
+    # 8a. Replace #define CONFIG_KSU_HACK_ARM64_BRANCH_LINK 1 with #define CONFIG_KSU_TAMPER_SYSCALL_TABLE 1
+    if "#define CONFIG_KSU_HACK_ARM64_BRANCH_LINK 1" in kc_text:
+        kc_text = kc_text.replace(
+            "#define CONFIG_KSU_HACK_ARM64_BRANCH_LINK 1",
+            "#define CONFIG_KSU_TAMPER_SYSCALL_TABLE 1"
+        )
+        print("[+] Replaced CONFIG_KSU_HACK_ARM64_BRANCH_LINK with CONFIG_KSU_TAMPER_SYSCALL_TABLE in ksu.c!")
+
+    # 8b. Add top flags to enforce TAMPER_SYSCALL_TABLE and undef HACK_ARM64_BRANCH_LINK
     top_flags = """#ifndef CONFIG_KSU_TAMPER_SYSCALL_TABLE
 #define CONFIG_KSU_TAMPER_SYSCALL_TABLE 1
 #endif
@@ -489,7 +499,18 @@ if ksu_c.exists():
         kc_text = top_flags + kc_text
         print("[+] Enforced CONFIG_KSU_TAMPER_SYSCALL_TABLE in ksu.c!")
 
-    # Disable ksu_extend_module_blacklist() and kobject_del in kernelsu_lkm_init
+    # 8c. Remove branch_link include block to prevent double inclusion of syscall_table_hook_arm64.c
+    branch_include_block = """#ifdef CONFIG_KSU_HACK_ARM64_BRANCH_LINK
+#undef syscall_table_sucompat_enable
+#undef syscall_table_sucompat_disable
+#include "hook/syscall_table_hook_arm64.c" // included as fallback
+#include "hook/branch_link_hook_arm64.c"
+#endif"""
+    if branch_include_block in kc_text:
+        kc_text = kc_text.replace(branch_include_block, "/* branch_link disabled */")
+        print("[+] Removed CONFIG_KSU_HACK_ARM64_BRANCH_LINK include block in ksu.c!")
+
+    # 8d. Disable ksu_extend_module_blacklist() and kobject_del in kernelsu_lkm_init
     if "ksu_extend_module_blacklist();" in kc_text:
         kc_text = kc_text.replace("ksu_extend_module_blacklist();", "// ksu_extend_module_blacklist();")
         print("[+] Disabled dangerous ksu_extend_module_blacklist() in ksu.c!")
