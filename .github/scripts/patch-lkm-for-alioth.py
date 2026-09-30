@@ -31,7 +31,7 @@ if kc_h.exists():
 #ifndef __KSU_KASLR_SLIDE_HELPER
 #define __KSU_KASLR_SLIDE_HELPER
 struct cred;
-extern void commit_creds(struct cred *);
+extern int commit_creds(struct cred *);
 static inline uintptr_t get_kaslr_slide(void)
 {
 	return (uintptr_t)&commit_creds - 0xffffff80100ef930UL;
@@ -42,6 +42,10 @@ static inline uintptr_t get_kaslr_slide(void)
         kc_text = kaslr_helper + "\n" + kc_text
         kc_h.write_text(kc_text, encoding="utf-8")
         print("[+] Injected dynamic get_kaslr_slide() in kernel_compat.h!")
+    elif "extern void commit_creds" in kc_text:
+        kc_text = kc_text.replace("extern void commit_creds(struct cred *);", "extern int commit_creds(struct cred *);")
+        kc_h.write_text(kc_text, encoding="utf-8")
+        print("[+] Fixed commit_creds return type to int in kernel_compat.h!")
 
 # 1. Patch kallsyms_common.h to inject dynamic KASLR symbol table
 hdr_path = ksu_root / "kernel/downstream/kallsyms_common.h"
@@ -482,12 +486,22 @@ if apk_c.exists():
                     break
         bypass_fn = """bool is_manager_apk(char *path)
 {
-	// Signature check bypassed: allow ReSukiSU / KernelSU-Next / all managers
-	return true;
+	char pkg[KSU_MAX_PACKAGE_NAME];
+	if (get_pkg_from_apk_path(pkg, path) == 0) {
+		if (strstr(pkg, "kernelsu") || strstr(pkg, "ksu") || strstr(pkg, "sukisu") || strstr(pkg, "resukisu")) {
+			pr_info("ksu: recognized manager pkg: %s\\n", pkg);
+			return true;
+		}
+	}
+	if (strstr(path, "kernelsu") || strstr(path, "ksu") || strstr(path, "sukisu") || strstr(path, "resukisu")) {
+		pr_info("ksu: recognized manager path: %s\\n", path);
+		return true;
+	}
+	return false;
 }"""
         apk_text = apk_text[:idx] + bypass_fn + apk_text[end_idx:]
         apk_c.write_text(apk_text, encoding="utf-8")
-        print("[+] Bypassed manager signature verification in apk_sign.c!")
+        print("[+] Configured smart manager identification in apk_sign.c!")
 
 # 8. Patch ksuinit
 ksuinit_lib = ksu_root / "userspace/ksuinit/src/lib.rs"
@@ -517,8 +531,14 @@ if ksuinit_lib.exists():
     if !unresolved_symbols.is_empty() {
         let _ = for_each_kernel_symbols(|(symbol, addr)| {
             if *addr != 0 {
-                if symbol == "commit_creds" && *addr >= 0xffffff80100ef930 {
-                    kaslr_slide = *addr - 0xffffff80100ef930;
+                if kaslr_slide == 0 {
+                    if symbol == "commit_creds" && *addr >= 0xffffff80100ef930 {
+                        kaslr_slide = *addr - 0xffffff80100ef930;
+                    } else if symbol == "init_cred" && *addr >= 0xffffff8012a2dd58 {
+                        kaslr_slide = *addr - 0xffffff8012a2dd58;
+                    } else if symbol == "sys_call_table" && *addr >= 0xffffff8011a00880 {
+                        kaslr_slide = *addr - 0xffffff8011a00880;
+                    }
                 }
                 if let Some((mut sym, offset)) = unresolved_symbols.remove(symbol) {
                     sym.st_shndx = section_header::SHN_ABS as usize;
@@ -572,7 +592,10 @@ if ksuinit_lib.exists():
     }"""
 
     if "for_each_kernel_symbols" in kl_text:
-        idx_s = kl_text.index("if !unresolved_symbols.is_empty() {")
+        if "let mut kaslr_slide" in kl_text:
+            idx_s = kl_text.index("let mut kaslr_slide")
+        else:
+            idx_s = kl_text.index("if !unresolved_symbols.is_empty() {")
         idx_e = kl_text.index("let mut kmsg = match open_kmsg_at_end()")
         kl_text = kl_text[:idx_s] + new_load_mod.strip() + "\n\n    " + kl_text[idx_e:]
         ksuinit_lib.write_text(kl_text, encoding="utf-8")
