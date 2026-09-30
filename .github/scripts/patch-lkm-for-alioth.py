@@ -2,6 +2,7 @@
 """Patch backslashxx/KernelSU staging-ksyscall-legacy for Redmi K40 (alioth)
 Kernel: 4.19.325-Ikun-KirinNova
 Base address: 0xffffff8010080000
+Supports Dynamic KASLR Slide & Manager Signature Bypass
 """
 
 import os
@@ -22,71 +23,94 @@ else:
     kernel_root = Path(".")
     ksu_root = Path("KernelSU")
 
-# 1. Patch kallsyms_common.h to inject comprehensive hardcoded symbol table
+# 0. Add common KASLR slide helper in kernel_compat.h
+kc_h = ksu_root / "kernel/kernel_compat.h"
+if kc_h.exists():
+    kc_text = kc_h.read_text(encoding="utf-8")
+    kaslr_helper = """
+#ifndef __KSU_KASLR_SLIDE_HELPER
+#define __KSU_KASLR_SLIDE_HELPER
+struct cred;
+extern void commit_creds(struct cred *);
+static inline uintptr_t get_kaslr_slide(void)
+{
+	return (uintptr_t)&commit_creds - 0xffffff80100ef930UL;
+}
+#endif
+"""
+    if "__KSU_KASLR_SLIDE_HELPER" not in kc_text:
+        kc_text = kaslr_helper + "\n" + kc_text
+        kc_h.write_text(kc_text, encoding="utf-8")
+        print("[+] Injected dynamic get_kaslr_slide() in kernel_compat.h!")
+
+# 1. Patch kallsyms_common.h to inject dynamic KASLR symbol table
 hdr_path = ksu_root / "kernel/downstream/kallsyms_common.h"
 if hdr_path.exists():
     text = hdr_path.read_text(encoding="utf-8")
     hardcoded_table = """
-// Hardcoded symbol table for 4.19.325-Ikun-KirinNova (Redmi K40 alioth)
+// Hardcoded symbol table for 4.19.325-Ikun-KirinNova with Dynamic KASLR Slide
 static uintptr_t get_hardcoded_symbol(const char *name)
 {
     if (!name) return 0;
+    uintptr_t slide = get_kaslr_slide();
+
     // Credentials & UID
-    if (!strcmp(name, "commit_creds")) return 0xffffff80100ef930;
-    if (!strcmp(name, "init_cred")) return 0xffffff8012a2dd58;
-    if (!strcmp(name, "__sys_setresuid")) return 0xffffff80100dc6d8;
-    if (!strcmp(name, "__arm64_sys_setresuid")) return 0xffffff80100dc908;
-    if (!strcmp(name, "security_task_fix_setuid")) return 0xffffff801054aaa4;
+    if (!strcmp(name, "commit_creds")) return 0xffffff80100ef930UL + slide;
+    if (!strcmp(name, "init_cred")) return 0xffffff8012a2dd58UL + slide;
+    if (!strcmp(name, "__sys_setresuid")) return 0xffffff80100dc6d8UL + slide;
+    if (!strcmp(name, "__arm64_sys_setresuid")) return 0xffffff80100dc908UL + slide;
+    if (!strcmp(name, "security_task_fix_setuid")) return 0xffffff801054aaa4UL + slide;
 
     // Execve & hooks
-    if (!strcmp(name, "__do_execve_file")) return 0xffffff80102ee4e8;
-    if (!strcmp(name, "exec_binprm")) return 0xffffff80102eefdc;
-    if (!strcmp(name, "search_binary_handler")) return 0xffffff80102ee2f0;
-    if (!strcmp(name, "security_bprm_check")) return 0xffffff8010548b04;
-    if (!strcmp(name, "__arm64_sys_execve")) return 0xffffff80102eea68;
-    if (!strcmp(name, "__arm64_sys_execveat")) return 0xffffff80102eeab8;
-    if (!strcmp(name, "__arm64_compat_sys_execve")) return 0xffffff80102eeb24;
-    if (!strcmp(name, "__arm64_compat_sys_execveat")) return 0xffffff80102eeb74;
+    if (!strcmp(name, "__do_execve_file")) return 0xffffff80102ee4e8UL + slide;
+    if (!strcmp(name, "exec_binprm")) return 0xffffff80102eefdcUL + slide;
+    if (!strcmp(name, "search_binary_handler")) return 0xffffff80102ee2f0UL + slide;
+    if (!strcmp(name, "security_bprm_check")) return 0xffffff8010548b04UL + slide;
+    if (!strcmp(name, "__arm64_sys_execve")) return 0xffffff80102eea68UL + slide;
+    if (!strcmp(name, "__arm64_sys_execveat")) return 0xffffff80102eeab8UL + slide;
+    if (!strcmp(name, "__arm64_compat_sys_execve")) return 0xffffff80102eeb24UL + slide;
+    if (!strcmp(name, "__arm64_compat_sys_execveat")) return 0xffffff80102eeb74UL + slide;
 
     // Faccessat
-    if (!strcmp(name, "do_faccessat")) return 0xffffff80102dfa60;
-    if (!strcmp(name, "__arm64_sys_faccessat")) return 0xffffff80102dfcc4;
+    if (!strcmp(name, "do_faccessat")) return 0xffffff80102dfa60UL + slide;
+    if (!strcmp(name, "__arm64_sys_faccessat")) return 0xffffff80102dfcc4UL + slide;
 
     // Stat & Read
-    if (!strcmp(name, "vfs_statx")) return 0xffffff80102eb048;
-    if (!strcmp(name, "__arm64_sys_newfstatat")) return 0xffffff80102eb2a0;
-    if (!strcmp(name, "__arm64_sys_newfstat")) return 0xffffff80102eb33c;
-    if (!strcmp(name, "__arm64_sys_fstatat64")) return 0xffffff80102eb650;
-    if (!strcmp(name, "__arm64_sys_fstat64")) return 0xffffff80102eb580;
-    if (!strcmp(name, "__arm64_compat_sys_newfstatat")) return 0xffffff80102eb8cc;
-    if (!strcmp(name, "vfs_read")) return 0xffffff80102e1e84;
-    if (!strcmp(name, "ksys_read")) return 0xffffff80102e2484;
-    if (!strcmp(name, "__arm64_sys_read")) return 0xffffff80102e2550;
-    if (!strcmp(name, "rw_verify_area")) return 0xffffff80102e1bf0;
+    if (!strcmp(name, "vfs_statx")) return 0xffffff80102eb048UL + slide;
+    if (!strcmp(name, "__arm64_sys_newfstatat")) return 0xffffff80102eb2a0UL + slide;
+    if (!strcmp(name, "__arm64_sys_newfstat")) return 0xffffff80102eb33cUL + slide;
+    if (!strcmp(name, "__arm64_sys_fstatat64")) return 0xffffff80102eb650UL + slide;
+    if (!strcmp(name, "__arm64_sys_fstat64")) return 0xffffff80102eb580UL + slide;
+    if (!strcmp(name, "__arm64_compat_sys_newfstatat")) return 0xffffff80102eb8ccUL + slide;
+    if (!strcmp(name, "vfs_read")) return 0xffffff80102e1e84UL + slide;
+    if (!strcmp(name, "ksys_read")) return 0xffffff80102e2484UL + slide;
+    if (!strcmp(name, "__arm64_sys_read")) return 0xffffff80102e2550UL + slide;
+    if (!strcmp(name, "rw_verify_area")) return 0xffffff80102e1bf0UL + slide;
 
     // Rename & FS
-    if (!strcmp(name, "do_renameat2")) return 0xffffff80102fa0dc;
-    if (!strcmp(name, "vfs_rename")) return 0xffffff80102f6ecc;
-    if (!strcmp(name, "security_inode_rename")) return 0xffffff8010549804;
-    if (!strcmp(name, "security_file_permission")) return 0xffffff8010549ff0;
-    if (!strcmp(name, "audit_inode_permission")) return 0xffffff8010559054;
+    if (!strcmp(name, "do_renameat2")) return 0xffffff80102fa0dcUL + slide;
+    if (!strcmp(name, "vfs_rename")) return 0xffffff80102f6eccUL + slide;
+    if (!strcmp(name, "security_inode_rename")) return 0xffffff8010549804UL + slide;
+    if (!strcmp(name, "security_file_permission")) return 0xffffff8010549ff0UL + slide;
+    if (!strcmp(name, "audit_inode_permission")) return 0xffffff8010559054UL + slide;
 
     // SELinux
-    if (!strcmp(name, "security_setprocattr")) return 0xffffff801054b840;
-    if (!strcmp(name, "avc_has_perm")) return 0xffffff801054dfe4;
-    if (!strcmp(name, "avc_has_perm_flags")) return 0xffffff801054e180;
-    if (!strcmp(name, "avc_has_extended_perms")) return 0xffffff801054d4c4;
-    if (!strcmp(name, "slow_avc_audit")) return 0xffffff801054cff0;
-    if (!strcmp(name, "selinux_state")) return 0xffffff8012dec928;
-    if (!strcmp(name, "proc_pid_attr_write")) return 0xffffff801038358c;
+    if (!strcmp(name, "security_setprocattr")) return 0xffffff801054b840UL + slide;
+    if (!strcmp(name, "avc_has_perm")) return 0xffffff801054dfe4UL + slide;
+    if (!strcmp(name, "avc_has_perm_flags")) return 0xffffff801054e180UL + slide;
+    if (!strcmp(name, "avc_has_extended_perms")) return 0xffffff801054d4c4UL + slide;
+    if (!strcmp(name, "slow_avc_audit")) return 0xffffff801054cff0UL + slide;
+    if (!strcmp(name, "selinux_state")) return 0xffffff8012dec928UL + slide;
+    if (!strcmp(name, "proc_pid_attr_write")) return 0xffffff801038358cUL + slide;
 
-    // Kallsyms & Syscall tables
-    if (!strcmp(name, "kallsyms_lookup_name")) return 0xffffff8010196aa8;
-    if (!strcmp(name, "kallsyms_on_each_symbol")) return 0xffffff8010196c64;
-    if (!strcmp(name, "kallsyms_lookup_size_offset")) return 0xffffff8010196e28;
-    if (!strcmp(name, "sys_call_table")) return 0xffffff8011a00880;
-    if (!strcmp(name, "compat_sys_call_table")) return 0xffffff8011a045f0;
-    if (!strcmp(name, "module_blacklist")) return 0xffffff8012dc54e8;
+    // Kallsyms, Syscall tables & LSM
+    if (!strcmp(name, "kallsyms_lookup_name")) return 0xffffff8010196aa8UL + slide;
+    if (!strcmp(name, "kallsyms_on_each_symbol")) return 0xffffff8010196c64UL + slide;
+    if (!strcmp(name, "kallsyms_lookup_size_offset")) return 0xffffff8010196e28UL + slide;
+    if (!strcmp(name, "sys_call_table")) return 0xffffff8011a00880UL + slide;
+    if (!strcmp(name, "compat_sys_call_table")) return 0xffffff8011a045f0UL + slide;
+    if (!strcmp(name, "module_blacklist")) return 0xffffff8012dc54e8UL + slide;
+    if (!strcmp(name, "security_hook_heads")) return 0xffffff8012688a08UL + slide;
 
     return 0;
 }
@@ -102,11 +126,19 @@ static uintptr_t get_hardcoded_symbol(const char *name)
     if "get_hardcoded_symbol" not in text:
         text = hardcoded_table + "\n" + text.replace(marker, replacement, 1)
         hdr_path.write_text(text, encoding="utf-8")
-        print("[+] Patched kallsyms_common.h with hardcoded symbols!")
+        print("[+] Patched kallsyms_common.h with dynamic KASLR symbols!")
     else:
-        print("[*] kallsyms_common.h already patched.")
+        # replace get_hardcoded_symbol block
+        start_fn = "static uintptr_t get_hardcoded_symbol(const char *name)"
+        end_fn = "return 0;\n}\n"
+        if start_fn in text and end_fn in text:
+            idx1 = text.index(start_fn)
+            idx2 = text.index(end_fn, idx1) + len(end_fn)
+            text = text[:idx1] + hardcoded_table.strip() + "\n" + text[idx2:]
+            hdr_path.write_text(text, encoding="utf-8")
+            print("[+] Updated kallsyms_common.h with dynamic KASLR symbols!")
 
-# 2. Stub out kprobes_common.h to completely eliminate register_kprobe / unregister_kprobe references
+# 2. Stub out kprobes_common.h
 kp_h = ksu_root / "kernel/downstream/kprobes_common.h"
 if kp_h.exists():
     kp_stub = """#ifndef __KSU_H_KPROBES_COMMON
@@ -131,7 +163,7 @@ static inline void destroy_kprobe(struct kprobe **kp_ptr)
     kp_h.write_text(kp_stub, encoding="utf-8")
     print("[+] Patched kprobes_common.h with safe non-kprobe stubs!")
 
-# 3. Patch syscall_table_hook_arm64.c cleanly without extern redeclaration errors
+# 3. Patch syscall_table_hook_arm64.c with dynamic KASLR slide
 sct_c = ksu_root / "kernel/hook/syscall_table_hook_arm64.c"
 if sct_c.exists():
     sct_text = sct_c.read_text(encoding="utf-8")
@@ -144,41 +176,41 @@ if sct_c.exists():
 
         clean_419_block = """#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0)
 
-#define sys_call_table ((syscall_fn_t *)0xffffff8011a00880)
-#define compat_sys_call_table ((const void **)0xffffff8011a045f0)
+#define sys_call_table ((syscall_fn_t *)(0xffffff8011a00880UL + get_kaslr_slide()))
+#define compat_sys_call_table ((const void **)(0xffffff8011a045f0UL + get_kaslr_slide()))
 
 static inline long call_real_arm64_sys_reboot(const struct pt_regs *regs) {
-	return ((long (*)(const struct pt_regs *))0xffffff80100f08dc)(regs);
+	return ((long (*)(const struct pt_regs *))(0xffffff80100f08dcUL + get_kaslr_slide()))(regs);
 }
 static inline long call_real_arm64_sys_execve(const struct pt_regs *regs) {
-	return ((long (*)(const struct pt_regs *))0xffffff80102eea68)(regs);
+	return ((long (*)(const struct pt_regs *))(0xffffff80102eea68UL + get_kaslr_slide()))(regs);
 }
 static inline long call_real_arm64_sys_execveat(const struct pt_regs *regs) {
-	return ((long (*)(const struct pt_regs *))0xffffff80102eeab8)(regs);
+	return ((long (*)(const struct pt_regs *))(0xffffff80102eeab8UL + get_kaslr_slide()))(regs);
 }
 static inline long call_real_arm64_sys_faccessat(const struct pt_regs *regs) {
-	return ((long (*)(const struct pt_regs *))0xffffff80102dfcc4)(regs);
+	return ((long (*)(const struct pt_regs *))(0xffffff80102dfcc4UL + get_kaslr_slide()))(regs);
 }
 static inline long call_real_arm64_sys_newfstatat(const struct pt_regs *regs) {
-	return ((long (*)(const struct pt_regs *))0xffffff80102eb2a0)(regs);
+	return ((long (*)(const struct pt_regs *))(0xffffff80102eb2a0UL + get_kaslr_slide()))(regs);
 }
 static inline long call_real_arm64_sys_newfstat(const struct pt_regs *regs) {
-	return ((long (*)(const struct pt_regs *))0xffffff80102eb33c)(regs);
+	return ((long (*)(const struct pt_regs *))(0xffffff80102eb33cUL + get_kaslr_slide()))(regs);
 }
 static inline long call_real_arm64_sys_read(const struct pt_regs *regs) {
-	return ((long (*)(const struct pt_regs *))0xffffff80102e2550)(regs);
+	return ((long (*)(const struct pt_regs *))(0xffffff80102e2550UL + get_kaslr_slide()))(regs);
 }
 static inline long call_real_arm64_compat_sys_execve(const struct pt_regs *regs) {
-	return ((long (*)(const struct pt_regs *))0xffffff80102eeb24)(regs);
+	return ((long (*)(const struct pt_regs *))(0xffffff80102eeb24UL + get_kaslr_slide()))(regs);
 }
 static inline long call_real_arm64_compat_sys_execveat(const struct pt_regs *regs) {
-	return ((long (*)(const struct pt_regs *))0xffffff80102eeb74)(regs);
+	return ((long (*)(const struct pt_regs *))(0xffffff80102eeb74UL + get_kaslr_slide()))(regs);
 }
 static inline long call_real_arm64_sys_fstatat64(const struct pt_regs *regs) {
-	return ((long (*)(const struct pt_regs *))0xffffff80102eb650)(regs);
+	return ((long (*)(const struct pt_regs *))(0xffffff80102eb650UL + get_kaslr_slide()))(regs);
 }
 static inline long call_real_arm64_sys_fstat64(const struct pt_regs *regs) {
-	return ((long (*)(const struct pt_regs *))0xffffff80102eb580)(regs);
+	return ((long (*)(const struct pt_regs *))(0xffffff80102eb580UL + get_kaslr_slide()))(regs);
 }
 
 static syscall_fn_t aarch64_reboot __read_mostly = nullptr; 
@@ -335,22 +367,21 @@ asmlinkage long hook_armeabi_read(const struct pt_regs *regs)
 
 """
         sct_c.write_text(before + clean_419_block + after, encoding="utf-8")
-        print("[+] Rewrote syscall_table_hook_arm64.c cleanly with call_real_* wrappers!")
+        print("[+] Rewrote syscall_table_hook_arm64.c with dynamic KASLR!")
 
-# 4. Patch module_blacklist.h
+# 4. Patch module_blacklist.h with dynamic KASLR slide
 mb_h = ksu_root / "kernel/downstream/module_blacklist.h"
 if mb_h.exists():
     mb_text = mb_h.read_text(encoding="utf-8")
-    
     mb_header = """#ifndef sys_call_table
-#define sys_call_table ((syscall_fn_t *)0xffffff8011a00880)
+#define sys_call_table ((syscall_fn_t *)(0xffffff8011a00880UL + get_kaslr_slide()))
 #endif
 
 static inline long call_real_arm64_sys_init_module(const struct pt_regs *regs) {
-	return ((long (*)(const struct pt_regs *))0xffffff801019ad78)(regs);
+	return ((long (*)(const struct pt_regs *))(0xffffff801019ad78UL + get_kaslr_slide()))(regs);
 }
 static inline long call_real_arm64_sys_finit_module(const struct pt_regs *regs) {
-	return ((long (*)(const struct pt_regs *))0xffffff801019d5f0)(regs);
+	return ((long (*)(const struct pt_regs *))(0xffffff801019d5f0UL + get_kaslr_slide()))(regs);
 }
 """
     if "call_real_arm64_sys_init_module" not in mb_text:
@@ -360,30 +391,19 @@ static inline long call_real_arm64_sys_finit_module(const struct pt_regs *regs) 
         mb_text = mb_text.replace("long ret = __arm64_sys_init_module(regs);", "long ret = call_real_arm64_sys_init_module(regs);")
         mb_text = mb_text.replace("long ret = __arm64_sys_finit_module(regs);", "long ret = call_real_arm64_sys_finit_module(regs);")
         mb_h.write_text(mb_text, encoding="utf-8")
-        print("[+] Patched module_blacklist.h with call_real wrappers!")
+        print("[+] Patched module_blacklist.h with dynamic KASLR slide!")
 
-# 5. Patch util.h for ksyscall dispatch
+# 5. Patch util.h for ksyscall dispatch with dynamic KASLR slide
 ut_h = ksu_root / "kernel/include/util.h"
 if ut_h.exists():
     ut_text = ut_h.read_text(encoding="utf-8")
-    old_ksyscall = """#define __ksyscall(name, a, b, c, d, e, f) ({				\\
-	extern long KSU_SYS_PREFIX(name)(const struct pt_regs *);	\\
-	struct pt_regs __ksu_regs = { 0 };				\\
-	PT_REGS_PARM1(&__ksu_regs) = (unsigned long)(a);		\\
-	PT_REGS_PARM2(&__ksu_regs) = (unsigned long)(b);		\\
-	PT_REGS_PARM3(&__ksu_regs) = (unsigned long)(c);		\\
-	PT_REGS_SYSCALL_PARM4(&__ksu_regs) = (unsigned long)(d);	\\
-	PT_REGS_PARM5(&__ksu_regs) = (unsigned long)(e);		\\
-	PT_REGS_PARM6(&__ksu_regs) = (unsigned long)(f);		\\
-	(long)KSU_SYS_PREFIX(name)(&__ksu_regs);			\\
-})"""
-
     new_ksyscall = """static inline long __ksu_dispatch_sys(const char *name, const struct pt_regs *regs)
 {
-	if (!strcmp(name, "close")) return ((long (*)(const struct pt_regs *))0xffffff80102e13bc)(regs);
-	if (!strcmp(name, "setns")) return ((long (*)(const struct pt_regs *))0xffffff80100df810)(regs);
-	if (!strcmp(name, "unshare")) return ((long (*)(const struct pt_regs *))0xffffff80100df3f0)(regs);
-	if (!strcmp(name, "umount")) return ((long (*)(const struct pt_regs *))0xffffff80102fca10)(regs);
+	uintptr_t slide = get_kaslr_slide();
+	if (!strcmp(name, "close")) return ((long (*)(const struct pt_regs *))(0xffffff80102e13bcUL + slide))(regs);
+	if (!strcmp(name, "setns")) return ((long (*)(const struct pt_regs *))(0xffffff80100df810UL + slide))(regs);
+	if (!strcmp(name, "unshare")) return ((long (*)(const struct pt_regs *))(0xffffff80100df3f0UL + slide))(regs);
+	if (!strcmp(name, "umount")) return ((long (*)(const struct pt_regs *))(0xffffff80102fca10UL + slide))(regs);
 	return -ENOSYS;
 }
 
@@ -398,17 +418,83 @@ if ut_h.exists():
 	__ksu_dispatch_sys(#name, &__ksu_regs);				\\
 })"""
 
+    old_ksyscall = """#define __ksyscall(name, a, b, c, d, e, f) ({				\\
+	extern long KSU_SYS_PREFIX(name)(const struct pt_regs *);	\\
+	struct pt_regs __ksu_regs = { 0 };				\\
+	PT_REGS_PARM1(&__ksu_regs) = (unsigned long)(a);		\\
+	PT_REGS_PARM2(&__ksu_regs) = (unsigned long)(b);		\\
+	PT_REGS_PARM3(&__ksu_regs) = (unsigned long)(c);		\\
+	PT_REGS_SYSCALL_PARM4(&__ksu_regs) = (unsigned long)(d);	\\
+	PT_REGS_PARM5(&__ksu_regs) = (unsigned long)(e);		\\
+	PT_REGS_PARM6(&__ksu_regs) = (unsigned long)(f);		\\
+	(long)KSU_SYS_PREFIX(name)(&__ksu_regs);			\\
+})"""
+
     if old_ksyscall in ut_text:
         ut_text = ut_text.replace(old_ksyscall, new_ksyscall, 1)
         ut_h.write_text(ut_text, encoding="utf-8")
-        print("[+] Patched util.h for literal syscall dispatch!")
+        print("[+] Patched util.h for dynamic KASLR syscall dispatch!")
+    elif "__ksu_dispatch_sys" in ut_text:
+        # replace existing __ksu_dispatch_sys
+        idx1 = ut_text.index("static inline long __ksu_dispatch_sys")
+        idx2 = ut_text.index("__ksu_dispatch_sys(#name, &__ksu_regs);				\\\n})") + len("__ksu_dispatch_sys(#name, &__ksu_regs);				\\\n})")
+        ut_text = ut_text[:idx1] + new_ksyscall + ut_text[idx2:]
+        ut_h.write_text(ut_text, encoding="utf-8")
+        print("[+] Updated util.h with dynamic KASLR slide!")
 
-# 6. Patch ksuinit
+# 6. Patch lsm_hooks_list.c to define security_hook_heads dynamically
+lsm_h = ksu_root / "kernel/hook/lsm_hooks_list.c"
+if lsm_h.exists():
+    lsm_text = lsm_h.read_text(encoding="utf-8")
+    shh_decl = "extern struct security_hook_heads security_hook_heads;"
+    shh_def = """static inline struct security_hook_heads *get_security_hook_heads(void)
+{
+	return (struct security_hook_heads *)(0xffffff8012688a08UL + get_kaslr_slide());
+}
+#define security_hook_heads (*get_security_hook_heads())
+"""
+    if shh_decl in lsm_text:
+        # Replace the first declaration with definition
+        lsm_text = lsm_text.replace(shh_decl, shh_def, 1)
+        # Remove any subsequent extern declarations
+        lsm_text = lsm_text.replace(shh_decl, "")
+        lsm_h.write_text(lsm_text, encoding="utf-8")
+        print("[+] Patched lsm_hooks_list.c to resolve security_hook_heads with dynamic KASLR!")
+
+# 7. Bypass manager APK signature verification in apk_sign.c
+apk_c = ksu_root / "kernel/manager/apk_sign.c"
+if apk_c.exists():
+    apk_text = apk_c.read_text(encoding="utf-8")
+    fn_start = "bool is_manager_apk(char *path)\n{"
+    if fn_start in apk_text:
+        # Replace entire is_manager_apk function body to return true
+        idx = apk_text.index(fn_start)
+        # find matching closing brace
+        brace_count = 0
+        end_idx = idx + len(fn_start)
+        for i in range(idx + len(fn_start) - 1, len(apk_text)):
+            if apk_text[i] == '{':
+                brace_count += 1
+            elif apk_text[i] == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    end_idx = i + 1
+                    break
+        bypass_fn = """bool is_manager_apk(char *path)
+{
+	// Signature check bypassed: allow ReSukiSU / KernelSU-Next / all managers
+	return true;
+}"""
+        apk_text = apk_text[:idx] + bypass_fn + apk_text[end_idx:]
+        apk_c.write_text(apk_text, encoding="utf-8")
+        print("[+] Bypassed manager signature verification in apk_sign.c!")
+
+# 8. Patch ksuinit
 ksuinit_lib = ksu_root / "userspace/ksuinit/src/lib.rs"
 if ksuinit_lib.exists():
     kl_text = ksuinit_lib.read_text(encoding="utf-8")
     
-    # 6a. Safe Kptr
+    # 8a. Safe Kptr
     old_kptr_block = """impl Kptr {
     pub fn new() -> Result<Self> {
         let value = fs::read_to_string("/proc/sys/kernel/kptr_restrict")?;
@@ -426,18 +512,25 @@ if ksuinit_lib.exists():
     if old_kptr_block in kl_text:
         kl_text = kl_text.replace(old_kptr_block, new_kptr_block, 1)
 
-    # 6b. Resilient load_module with hardcoded fallback table
-    old_kallsyms_res = """.context("Cannot parse kallsyms")?;
+    # 8b. Dynamic KASLR fallback table in ksuinit
+    new_load_mod = """    let mut kaslr_slide: u64 = 0;
+    if !unresolved_symbols.is_empty() {
+        let _ = for_each_kernel_symbols(|(symbol, addr)| {
+            if *addr != 0 {
+                if symbol == "commit_creds" && *addr >= 0xffffff80100ef930 {
+                    kaslr_slide = *addr - 0xffffff80100ef930;
+                }
+                if let Some((mut sym, offset)) = unresolved_symbols.remove(symbol) {
+                    sym.st_shndx = section_header::SHN_ABS as usize;
+                    sym.st_value = *addr;
+                    let _ = buffer.pwrite_with(sym, offset, ctx);
+                }
+            }
+            Ok(!unresolved_symbols.is_empty())
+        });
     }
 
-    for name in unresolved_symbols.keys() {
-        log::warn!("Cannot find symbol: {}", name);
-    }"""
-
-    new_kallsyms_res = """.ok(); // Do not fail if kallsyms restricted
-    }
-
-    let hardcoded: [(&str, u64); 25] = [
+    let hardcoded_bases: [(&str, u64); 26] = [
         ("sys_call_table", 0xffffff8011a00880),
         ("compat_sys_call_table", 0xffffff8011a045f0),
         ("__arm64_sys_reboot", 0xffffff80100f08dc),
@@ -463,13 +556,14 @@ if ksuinit_lib.exists():
         ("kallsyms_on_each_symbol", 0xffffff8010196c64),
         ("kallsyms_lookup_size_offset", 0xffffff8010196e28),
         ("module_blacklist", 0xffffff8012dc54e8),
+        ("security_hook_heads", 0xffffff8012688a08),
     ];
-    for (name, addr) in hardcoded {
+    for (name, base_addr) in hardcoded_bases {
         if let Some((mut sym, offset)) = unresolved_symbols.remove(name) {
             sym.st_shndx = section_header::SHN_ABS as usize;
-            sym.st_value = addr;
+            sym.st_value = base_addr + kaslr_slide;
             let _ = buffer.pwrite_with(sym, offset, ctx);
-            log::info!("Hardcoded symbol {} -> 0x{:x}", name, addr);
+            log::info!("Hardcoded symbol {} -> 0x{:x}", name, base_addr + kaslr_slide);
         }
     }
 
@@ -477,13 +571,14 @@ if ksuinit_lib.exists():
         log::warn!("Cannot find symbol: {}", name);
     }"""
 
-    if old_kallsyms_res in kl_text:
-        kl_text = kl_text.replace(old_kallsyms_res, new_kallsyms_res, 1)
+    if "for_each_kernel_symbols" in kl_text:
+        idx_s = kl_text.index("if !unresolved_symbols.is_empty() {")
+        idx_e = kl_text.index("let mut kmsg = match open_kmsg_at_end()")
+        kl_text = kl_text[:idx_s] + new_load_mod.strip() + "\n\n    " + kl_text[idx_e:]
+        ksuinit_lib.write_text(kl_text, encoding="utf-8")
+        print("[+] Patched ksuinit with dynamic KASLR relocation & hardcoded symbol fallback!")
 
-    ksuinit_lib.write_text(kl_text, encoding="utf-8")
-    print("[+] Patched ksuinit with safe kallsyms resolution & hardcoded symbol table!")
-
-# 7. Patch Makefile to ensure obj-m is set and CONFIG_KSU_HACK_ARM64_BRANCH_LINK is defined
+# 9. Patch Makefile to ensure obj-m is set and CONFIG_KSU_HACK_ARM64_BRANCH_LINK is defined
 mk_path = ksu_root / "kernel/Makefile"
 if mk_path.exists():
     mk_text = mk_path.read_text(encoding="utf-8")
@@ -496,7 +591,7 @@ if mk_path.exists():
         mk_path.write_text(mk_text, encoding="utf-8")
         print("[+] Patched KernelSU/kernel/Makefile for obj-m and CONFIG_KSU_HACK_ARM64_BRANCH_LINK!")
 
-# 8. Patch kernel_includes.h and ksu.c for UTS definitions
+# 10. Patch kernel_includes.h and ksu.c for UTS definitions
 ki_path = ksu_root / "kernel/kernel_includes.h"
 if ki_path.exists():
     ki_text = ki_path.read_text(encoding="utf-8")
@@ -511,7 +606,7 @@ if ksu_c.exists():
         kc_text = "#ifndef UTS_MACHINE\n#define UTS_MACHINE \"arm64\"\n#endif\n" + kc_text
         ksu_c.write_text(kc_text, encoding="utf-8")
 
-# 9. Generate compile.h in kernel tree
+# 11. Generate compile.h in kernel tree
 compile_h_content = """/* SPDX-License-Identifier: GPL-2.0 */
 #define UTS_MACHINE "arm64"
 #define UTS_VERSION "#1 SMP PREEMPT Sat Sep 26 11:54:08 UTC 2026"
@@ -525,7 +620,7 @@ if kernel_root.is_dir() and (kernel_root / "Makefile").exists():
     compile_h_path.write_text(compile_h_content, encoding="utf-8")
     print(f"[+] Generated {compile_h_path} successfully!")
 
-# 10. Build genheaders and generate SELinux headers (flask.h, av_permissions.h)
+# 12. Build genheaders and generate SELinux headers (flask.h, av_permissions.h)
 genheaders_src = kernel_root / "scripts/selinux/genheaders/genheaders.c"
 if genheaders_src.exists():
     cmd = [
