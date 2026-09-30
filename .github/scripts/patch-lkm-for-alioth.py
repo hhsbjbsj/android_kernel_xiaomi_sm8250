@@ -131,78 +131,236 @@ static inline void destroy_kprobe(struct kprobe **kp_ptr)
     kp_h.write_text(kp_stub, encoding="utf-8")
     print("[+] Patched kprobes_common.h with safe non-kprobe stubs!")
 
-# 3. Patch syscall_table_hook_arm64.c to use direct literal addresses
+# 3. Patch syscall_table_hook_arm64.c cleanly without extern redeclaration errors
 sct_c = ksu_root / "kernel/hook/syscall_table_hook_arm64.c"
 if sct_c.exists():
     sct_text = sct_c.read_text(encoding="utf-8")
-    
-    # Replace the 4.19+ externs and sys_call_table declarations
-    old_block = """#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0)
+    start_marker = "#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0)"
+    end_marker = "#else // END OF 4.19+ SYSCALL HANDLERS"
 
-// on 4.19+ its is no longer just a void *sys_call_table[]
-// it becomes syscall_fn_t sys_call_table[];
+    if start_marker in sct_text and end_marker in sct_text:
+        before = sct_text[:sct_text.index(start_marker)]
+        after = sct_text[sct_text.index(end_marker):]
 
-extern long __arm64_sys_reboot(const struct pt_regs *regs);"""
-    
-    new_block = """#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0)
+        clean_419_block = """#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0)
 
 #define sys_call_table ((syscall_fn_t *)0xffffff8011a00880)
 #define compat_sys_call_table ((const void **)0xffffff8011a045f0)
 
-#define __arm64_sys_reboot ((long (*)(const struct pt_regs *))0xffffff80100f08dc)"""
+static inline long call_real_arm64_sys_reboot(const struct pt_regs *regs) {
+	return ((long (*)(const struct pt_regs *))0xffffff80100f08dc)(regs);
+}
+static inline long call_real_arm64_sys_execve(const struct pt_regs *regs) {
+	return ((long (*)(const struct pt_regs *))0xffffff80102eea68)(regs);
+}
+static inline long call_real_arm64_sys_execveat(const struct pt_regs *regs) {
+	return ((long (*)(const struct pt_regs *))0xffffff80102eeab8)(regs);
+}
+static inline long call_real_arm64_sys_faccessat(const struct pt_regs *regs) {
+	return ((long (*)(const struct pt_regs *))0xffffff80102dfcc4)(regs);
+}
+static inline long call_real_arm64_sys_newfstatat(const struct pt_regs *regs) {
+	return ((long (*)(const struct pt_regs *))0xffffff80102eb2a0)(regs);
+}
+static inline long call_real_arm64_sys_newfstat(const struct pt_regs *regs) {
+	return ((long (*)(const struct pt_regs *))0xffffff80102eb33c)(regs);
+}
+static inline long call_real_arm64_sys_read(const struct pt_regs *regs) {
+	return ((long (*)(const struct pt_regs *))0xffffff80102e2550)(regs);
+}
+static inline long call_real_arm64_compat_sys_execve(const struct pt_regs *regs) {
+	return ((long (*)(const struct pt_regs *))0xffffff80102eeb24)(regs);
+}
+static inline long call_real_arm64_compat_sys_execveat(const struct pt_regs *regs) {
+	return ((long (*)(const struct pt_regs *))0xffffff80102eeb74)(regs);
+}
+static inline long call_real_arm64_sys_fstatat64(const struct pt_regs *regs) {
+	return ((long (*)(const struct pt_regs *))0xffffff80102eb650)(regs);
+}
+static inline long call_real_arm64_sys_fstat64(const struct pt_regs *regs) {
+	return ((long (*)(const struct pt_regs *))0xffffff80102eb580)(regs);
+}
 
-    if old_block in sct_text:
-        sct_text = sct_text.replace(old_block, new_block, 1)
+static syscall_fn_t aarch64_reboot __read_mostly = nullptr; 
+asmlinkage long hook_aarch64_reboot(const struct pt_regs *regs)
+{
+	int magic1 = (int)regs->regs[0];
+	int magic2 = (int)regs->regs[1];
+	unsigned int cmd = (unsigned int)regs->regs[2];
+	void __user **arg = (void __user **)&regs->regs[3];
 
-    # Replace each extern long __arm64_sys_*
-    replacements = [
-        ("extern long __arm64_sys_execve(const struct pt_regs *regs);",
-         "#define __arm64_sys_execve ((long (*)(const struct pt_regs *))0xffffff80102eea68)"),
-        ("extern long __arm64_sys_execveat(const struct pt_regs *regs);",
-         "#define __arm64_sys_execveat ((long (*)(const struct pt_regs *))0xffffff80102eeab8)"),
-        ("extern long __arm64_sys_faccessat(const struct pt_regs *regs);",
-         "#define __arm64_sys_faccessat ((long (*)(const struct pt_regs *))0xffffff80102dfcc4)"),
-        ("extern long __arm64_sys_newfstatat(const struct pt_regs *regs);",
-         "#define __arm64_sys_newfstatat ((long (*)(const struct pt_regs *))0xffffff80102eb2a0)"),
-        ("extern long __arm64_sys_newfstat(const struct pt_regs *regs);",
-         "#define __arm64_sys_newfstat ((long (*)(const struct pt_regs *))0xffffff80102eb33c)"),
-        ("extern long __arm64_sys_read(const struct pt_regs *regs);",
-         "#define __arm64_sys_read ((long (*)(const struct pt_regs *))0xffffff80102e2550)"),
-        ("extern long __arm64_compat_sys_execve(const struct pt_regs *regs);",
-         "#define __arm64_compat_sys_execve ((long (*)(const struct pt_regs *))0xffffff80102eeb24)"),
-        ("extern long __arm64_compat_sys_execveat(const struct pt_regs *regs);",
-         "#define __arm64_compat_sys_execveat ((long (*)(const struct pt_regs *))0xffffff80102eeb74)"),
-        ("extern long __arm64_sys_fstatat64(const struct pt_regs *regs);",
-         "#define __arm64_sys_fstatat64 ((long (*)(const struct pt_regs *))0xffffff80102eb650)"),
-        ("extern long __arm64_sys_fstat64(const struct pt_regs *regs);",
-         "#define __arm64_sys_fstat64 ((long (*)(const struct pt_regs *))0xffffff80102eb580)"),
-    ]
-    for old_s, new_s in replacements:
-        if old_s in sct_text:
-            sct_text = sct_text.replace(old_s, new_s, 1)
+	ksu_handle_sys_reboot(magic1, magic2, cmd, arg);
+	return call_real_arm64_sys_reboot(regs);
+}
 
-    sct_c.write_text(sct_text, encoding="utf-8")
-    print("[+] Patched syscall_table_hook_arm64.c with literal addresses!")
+static syscall_fn_t aarch64_execve __read_mostly = nullptr;
+asmlinkage long hook_aarch64_execve(const struct pt_regs *regs)
+{
+	const char __user **filename = (const char __user **)&regs->regs[0];
+	void ***argv = (void ***)&regs->regs[1];
+	void ***envp = (void ***)&regs->regs[2];
+
+	ksu_handle_sys_execve(filename, argv, envp);
+	return call_real_arm64_sys_execve(regs);
+}
+
+static syscall_fn_t aarch64_execveat __read_mostly = nullptr;
+asmlinkage long hook_aarch64_execveat(const struct pt_regs *regs)
+{
+	int *fd = (int *)&regs->regs[0];
+	const char __user **filename = (const char __user **)&regs->regs[1];
+	void ***argv = (void ***)&regs->regs[2];
+	void ***envp = (void ***)&regs->regs[3];
+	int *flags = (int *)&regs->regs[4];
+
+	ksu_handle_sys_execveat(fd, filename, argv, envp, flags);
+	return call_real_arm64_sys_execveat(regs);
+}
+
+static syscall_fn_t aarch64_faccessat __read_mostly = nullptr;
+asmlinkage long hook_aarch64_faccessat(const struct pt_regs *regs)
+{
+	const char __user **filename = (const char __user **)&regs->regs[1];
+
+	ksu_handle_faccessat(NULL, filename, NULL, NULL);
+	return call_real_arm64_sys_faccessat(regs);
+}
+
+static syscall_fn_t aarch64_newfstatat __read_mostly = nullptr;
+asmlinkage long hook_aarch64_newfstatat(const struct pt_regs *regs)
+{
+	const char __user **filename = (const char __user **)&regs->regs[1];
+
+	ksu_handle_stat(NULL, filename, NULL);
+	return call_real_arm64_sys_newfstatat(regs);
+}
+
+static syscall_fn_t aarch64_newfstat __read_mostly = nullptr;
+asmlinkage long hook_aarch64_newfstat_ret(const struct pt_regs *regs)
+{
+	unsigned int *fd = (unsigned int *)&regs->regs[0];
+	struct stat __user **statbuf = (struct stat __user **)&regs->regs[1];
+
+	long ret = call_real_arm64_sys_newfstat(regs);
+	ksu_handle_newfstat_ret(fd, statbuf);
+	return ret;
+}
+
+static syscall_fn_t aarch64_read __read_mostly = nullptr;
+asmlinkage long hook_aarch64_read(const struct pt_regs *regs)
+{
+	unsigned int fd = (unsigned int)regs->regs[0];
+
+	ksu_handle_sys_read_fd(fd);
+
+	return call_real_arm64_sys_read(regs);
+}
+
+#ifdef CONFIG_COMPAT
+static syscall_fn_t armeabi_reboot __read_mostly = nullptr;
+asmlinkage long hook_armeabi_reboot(const struct pt_regs *regs)
+{
+	int magic1 = (int)regs->regs[0];
+	int magic2 = (int)regs->regs[1];
+	unsigned int cmd = (unsigned int)regs->regs[2];
+	void __user **arg = (void __user **)&regs->regs[3];
+
+	ksu_handle_sys_reboot(magic1, magic2, cmd, arg);
+	return call_real_arm64_sys_reboot(regs);
+}
+
+static syscall_fn_t armeabi_execve __read_mostly = nullptr;
+asmlinkage long hook_armeabi_execve(const struct pt_regs *regs)
+{
+	const char __user **filename = (const char __user **)&regs->regs[0];
+	void ***argv = (void ***)&regs->regs[1];
+	void ***envp = (void ***)&regs->regs[2];
+
+	ksu_handle_sys_execve(filename, argv, envp);
+	return call_real_arm64_compat_sys_execve(regs);
+}
+
+static syscall_fn_t armeabi_execveat __read_mostly = nullptr;
+asmlinkage long hook_armeabi_execveat(const struct pt_regs *regs)
+{
+	int *fd = (int *)&regs->regs[0];
+	const char __user **filename = (const char __user **)&regs->regs[1];
+	void ***argv = (void ***)&regs->regs[2];
+	void ***envp = (void ***)&regs->regs[3];
+	int *flags = (int *)&regs->regs[4];
+
+	ksu_handle_sys_execveat(fd, filename, argv, envp, flags);
+	return call_real_arm64_compat_sys_execveat(regs);
+}
+
+static syscall_fn_t armeabi_faccessat __read_mostly = nullptr;
+asmlinkage long hook_armeabi_faccessat(const struct pt_regs *regs)
+{
+	const char __user **filename = (const char __user **)&regs->regs[1];
+
+	ksu_handle_faccessat(NULL, filename, NULL, NULL);
+	return call_real_arm64_sys_faccessat(regs);
+}
+
+static syscall_fn_t armeabi_fstatat64 __read_mostly = nullptr;
+asmlinkage long hook_armeabi_fstatat64(const struct pt_regs *regs)
+{
+	const char __user **filename = (const char __user **)&regs->regs[1];
+
+	ksu_handle_stat(NULL, filename, NULL);
+	return call_real_arm64_sys_fstatat64(regs);
+}
+
+static syscall_fn_t armeabi_fstat64 __read_mostly = nullptr;
+asmlinkage long hook_armeabi_fstat64_ret(const struct pt_regs *regs)
+{
+	unsigned long *fd = (unsigned long *)&regs->regs[0];
+	struct stat64 __user **statbuf = (struct stat64 __user **)&regs->regs[1];
+
+	long ret = call_real_arm64_sys_fstat64(regs);
+	ksu_handle_fstat64_ret(fd, statbuf);
+	return ret;
+}
+
+static syscall_fn_t armeabi_read __read_mostly = nullptr;
+asmlinkage long hook_armeabi_read(const struct pt_regs *regs)
+{
+	unsigned int fd = (unsigned int)regs->regs[0];	
+
+	ksu_handle_sys_read_fd(fd);
+	return call_real_arm64_sys_read(regs);
+}
+
+#endif // CONFIG_COMPAT
+
+"""
+        sct_c.write_text(before + clean_419_block + after, encoding="utf-8")
+        print("[+] Rewrote syscall_table_hook_arm64.c cleanly with call_real_* wrappers!")
 
 # 4. Patch module_blacklist.h
 mb_h = ksu_root / "kernel/downstream/module_blacklist.h"
 if mb_h.exists():
     mb_text = mb_h.read_text(encoding="utf-8")
-    mb_repls = [
-        ("extern long __arm64_sys_init_module(const struct pt_regs *regs);",
-         "#define __arm64_sys_init_module ((long (*)(const struct pt_regs *))0xffffff801019ad78)"),
-        ("extern long __arm64_sys_finit_module(const struct pt_regs *regs);",
-         "#define __arm64_sys_finit_module ((long (*)(const struct pt_regs *))0xffffff801019d5f0)"),
-    ]
-    for old_s, new_s in mb_repls:
-        if old_s in mb_text:
-            mb_text = mb_text.replace(old_s, new_s, 1)
+    
+    mb_header = """#ifndef sys_call_table
+#define sys_call_table ((syscall_fn_t *)0xffffff8011a00880)
+#endif
 
-    if "#ifndef sys_call_table" not in mb_text:
-        mb_text = "#ifndef sys_call_table\n#define sys_call_table ((syscall_fn_t *)0xffffff8011a00880)\n#endif\n" + mb_text
-
-    mb_h.write_text(mb_text, encoding="utf-8")
-    print("[+] Patched module_blacklist.h with literal addresses!")
+static inline long call_real_arm64_sys_init_module(const struct pt_regs *regs) {
+	return ((long (*)(const struct pt_regs *))0xffffff801019ad78)(regs);
+}
+static inline long call_real_arm64_sys_finit_module(const struct pt_regs *regs) {
+	return ((long (*)(const struct pt_regs *))0xffffff801019d5f0)(regs);
+}
+"""
+    if "call_real_arm64_sys_init_module" not in mb_text:
+        mb_text = mb_header + mb_text
+        mb_text = mb_text.replace("extern long __arm64_sys_init_module(const struct pt_regs *regs);", "")
+        mb_text = mb_text.replace("extern long __arm64_sys_finit_module(const struct pt_regs *regs);", "")
+        mb_text = mb_text.replace("long ret = __arm64_sys_init_module(regs);", "long ret = call_real_arm64_sys_init_module(regs);")
+        mb_text = mb_text.replace("long ret = __arm64_sys_finit_module(regs);", "long ret = call_real_arm64_sys_finit_module(regs);")
+        mb_h.write_text(mb_text, encoding="utf-8")
+        print("[+] Patched module_blacklist.h with call_real wrappers!")
 
 # 5. Patch util.h for ksyscall dispatch
 ut_h = ksu_root / "kernel/include/util.h"
