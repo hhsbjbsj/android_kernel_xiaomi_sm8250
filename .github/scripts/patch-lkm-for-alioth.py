@@ -188,4 +188,27 @@ if genheaders_src.exists():
     except Exception as e:
         print("[-] Notice when running genheaders:", e)
 
+# 7. Patch ksuinit to set kptr_restrict to 0 and safely resolve kallsyms
+ksuinit_lib = ksu_root / "userspace/ksuinit/src/lib.rs"
+if ksuinit_lib.exists():
+    lib_text = ksuinit_lib.read_text(encoding="utf-8")
+    old_kptr = """impl Kptr {
+    pub fn new() -> Result<Self> {
+        let value = fs::read_to_string("/proc/sys/kernel/kptr_restrict")?;
+        fs::write("/proc/sys/kernel/kptr_restrict", "1")?;
+        Ok(Kptr { value })
+    }
+}"""
+    new_kptr = """impl Kptr {
+    pub fn new() -> Result<Self> {
+        let value = fs::read_to_string("/proc/sys/kernel/kptr_restrict").unwrap_or_else(|_| "2".to_string());
+        let _ = fs::write("/proc/sys/kernel/kptr_restrict", "0");
+        Ok(Kptr { value })
+    }
+}"""
+    if old_kptr in lib_text:
+        lib_text = lib_text.replace(old_kptr, new_kptr)
+        ksuinit_lib.write_text(lib_text, encoding="utf-8")
+        print("[+] Patched ksuinit Kptr::new to set kptr_restrict=0 safely!")
+
 print("[+] LKM patch completed successfully.")
