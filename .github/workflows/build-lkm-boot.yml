@@ -8,6 +8,7 @@ on:
     paths:
       - '.github/workflows/build-lkm-boot.yml'
       - '.github/scripts/patch-lkm-for-alioth.py'
+      - '.github/scripts/running_kernel.config'
 
 jobs:
   build-lkm:
@@ -81,7 +82,8 @@ jobs:
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-        make -j$(nproc) CC=clang HOSTCC=clang LLVM=1 LLVM_IAS=1 alioth_defconfig
+        # Use 100% exact running kernel config
+        cp ../_ci/.github/scripts/running_kernel.config .config
 
         scripts/config --file .config \
           --set-str LOCALVERSION "-Ikun-KirinNova" \
@@ -91,12 +93,14 @@ jobs:
           -e MODVERSIONS \
           -e KALLSYMS \
           -e KALLSYMS_ALL \
-          -e KPROBES \
-          -e KRETPROBES \
-          -e SECURITY_SELINUX \
-          -e SECCOMP \
-          -e KSU \
-          -e KSU_HACK_ARM64_BRANCH_LINK
+          --disable KPROBES \
+          --disable KRETPROBES \
+          --disable CFI \
+          --disable CFI_CLANG \
+          --disable SHADOW_CALL_STACK \
+          -m KSU \
+          -e KSU_HACK_ARM64_BRANCH_LINK \
+          --disable KSU_TAMPER_SYSCALL_TABLE
 
         make CC=clang HOSTCC=clang LLVM=1 LLVM_IAS=1 olddefconfig
         make -j$(nproc) CC=clang HOSTCC=clang LLVM=1 LLVM_IAS=1 prepare modules_prepare
