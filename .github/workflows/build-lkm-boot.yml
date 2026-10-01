@@ -9,6 +9,7 @@ on:
       - '.github/workflows/build-lkm-boot.yml'
       - '.github/scripts/patch-lkm-for-alioth.py'
       - '.github/scripts/running_kernel.config'
+      - '.github/scripts/Module.symvers.gz'
 
 jobs:
   build-lkm:
@@ -105,6 +106,13 @@ jobs:
         make CC=clang HOSTCC=clang LLVM=1 LLVM_IAS=1 olddefconfig
         make -j$(nproc) CC=clang HOSTCC=clang LLVM=1 LLVM_IAS=1 prepare modules_prepare
 
+        # Inject exact extracted Module.symvers from running kernel
+        gzip -dc ../_ci/.github/scripts/Module.symvers.gz > Module.symvers
+        echo "=== INJECTED MODULE.SYMVERS ==="
+        head -n 5 Module.symvers
+        echo "Total symbols: $(wc -l < Module.symvers)"
+        echo "==============================="
+
         echo "=== VERIFIED KERNEL RELEASE ==="
         cat include/config/kernel.release
         echo "==============================="
@@ -158,24 +166,34 @@ jobs:
         echo "Using NDK: $ANDROID_NDK_HOME"
 
         cd "$GITHUB_WORKSPACE/KernelSU"
-        chmod +x .github/scripts/setup-rust-build.sh
-        source .github/scripts/setup-rust-build.sh aarch64-linux-android 26
-        BUILTINS="$($CLANG_PATH --print-resource-dir)/lib/linux/libclang_rt.builtins-aarch64-android.a"
-        if [ ! -f "$BUILTINS" ]; then
-          BUILTINS=$(find "$ANDROID_NDK_HOME" -name "libclang_rt.builtins-aarch64*.a" | head -n 1)
-        fi
-        echo "Using BUILTINS: $BUILTINS"
-        export RUSTFLAGS="-C target-feature=+crt-static -C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wno-unused-command-line-argument -C link-arg=$BUILTINS"
-        cargo build --package ksuinit --target=aarch64-linux-android --release
         
-        test -f target/aarch64-linux-android/release/ksuinit || { echo "ksuinit not found!"; exit 1; }
-        cp target/aarch64-linux-android/release/ksuinit "$GITHUB_WORKSPACE/ksuinit"
-        echo "[+] Built ksuinit successfully!"
+        # Build ksuinit
+        cargo build --manifest-path userspace/ksuinit/Cargo.toml --target aarch64-linux-android --release
+        
+        KSUINIT_BIN="$GITHUB_WORKSPACE/KernelSU/userspace/ksuinit/target/aarch64-linux-android/release/ksuinit"
+        test -f "$KSUINIT_BIN" || { echo "ksuinit binary not found!"; exit 1; }
+        
+        llvm-strip --strip-all "$KSUINIT_BIN" -o "$GITHUB_WORKSPACE/ksuinit"
+        echo "[+] Built and stripped ksuinit successfully!"
+        ls -lh "$GITHUB_WORKSPACE/ksuinit"
 
-    - name: Upload Artifacts
+    - name: Package Artifacts
+      run: |
+        cd "$GITHUB_WORKSPACE"
+        mkdir -p dist
+        cp ksu.ko dist/
+        cp ksuinit dist/
+        cd dist
+        zip -9 ../artifact.zip ksu.ko ksuinit
+        echo "[+] Packaged artifact.zip:"
+        ls -lh ../artifact.zip
+
+    - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: KSU-LKM-Alioth-IkunKirinNova-${{ github.run_number }}
+        name: ksu-lkm-alioth
         path: |
-          ksu.ko
-          ksuinit
+          dist/ksu.ko
+          dist/ksuinit
+          artifact.zip
+        retention-days: 7
