@@ -167,6 +167,10 @@ jobs:
 
         cd "$GITHUB_WORKSPACE/KernelSU"
         
+        # Setup cargo cross-compilation config for NDK
+        python3 scripts/setup_cargo_config.py --ndk-root "$ANDROID_NDK_HOME"
+        cat .cargo/config.toml || true
+
         # Build ksuinit
         cargo build --manifest-path userspace/ksuinit/Cargo.toml --target aarch64-linux-android --release
         
