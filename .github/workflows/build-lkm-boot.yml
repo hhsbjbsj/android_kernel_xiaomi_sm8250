@@ -31,11 +31,11 @@ jobs:
         path: kernel
         fetch-depth: 1
 
-    - name: Checkout backslashxx/KernelSU (staging-ksyscall-legacy)
+    - name: Checkout backslashxx/KernelSU (staging)
       uses: actions/checkout@v4
       with:
         repository: backslashxx/KernelSU
-        ref: staging-ksyscall-legacy
+        ref: staging
         path: KernelSU
         fetch-depth: 1
 
