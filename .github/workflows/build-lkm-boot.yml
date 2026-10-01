@@ -174,8 +174,9 @@ jobs:
         # Build ksuinit
         cargo build --manifest-path userspace/ksuinit/Cargo.toml --target aarch64-linux-android --release
         
-        KSUINIT_BIN="$GITHUB_WORKSPACE/KernelSU/userspace/ksuinit/target/aarch64-linux-android/release/ksuinit"
-        test -f "$KSUINIT_BIN" || { echo "ksuinit binary not found!"; exit 1; }
+        KSUINIT_BIN=$(find "$GITHUB_WORKSPACE/KernelSU" -type f -name ksuinit | grep -E 'release/ksuinit$' | head -n 1)
+        test -f "$KSUINIT_BIN" || { echo "ksuinit binary not found! Available files:"; find "$GITHUB_WORKSPACE/KernelSU" -name "*ksuinit*"; exit 1; }
+        echo "Found ksuinit at: $KSUINIT_BIN"
         
         llvm-strip --strip-all "$KSUINIT_BIN" -o "$GITHUB_WORKSPACE/ksuinit"
         echo "[+] Built and stripped ksuinit successfully!"
