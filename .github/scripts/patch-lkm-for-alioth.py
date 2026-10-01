@@ -334,7 +334,8 @@ static noinline void restore_syscall(void *old_ptr, unsigned long syscall_nr, vo
 		return;
 
 	void **target_slot = (void **)((unsigned long)writable_addr + offset);
-	patch_ptr_slot_kick_cpu(target_slot, (void *)new_ptr);
+	patch_ptr_slot_kick_cpu(target_slot, *(void **)old_ptr);
+	WRITE_ONCE(*(void **)old_ptr, NULL);
 
 	vunmap(writable_addr);
 	smp_mb();
@@ -928,15 +929,14 @@ use rustix::{cstr, runtime::execve};
 pub unsafe extern "C" fn main(_argc: i32, argv: *const *const u8, envp: *const *const u8) -> i32 {
     let _ = init::init();
     unsafe {
-        if rustix::fs::access("/init.real", rustix::fs::Access::EXISTS).is_ok() {
-            let _ = execve(cstr!("/init.real"), argv, envp);
+        // Direct execution of real Android init binary
+        let _ = execve(cstr!("/system/bin/init"), argv, envp);
+        let _ = execve(cstr!("/init.real"), argv, envp);
+        let _ = execve(cstr!("/init"), argv, envp);
+        loop {
+            let _ = rustix::thread::pause();
         }
-        if rustix::fs::access("/system/bin/init", rustix::fs::Access::EXISTS).is_ok() {
-            let _ = execve(cstr!("/system/bin/init"), argv, envp);
-        }
-        execve(cstr!("/init"), argv, envp);
     }
-    0
 }
 """
     ksuinit_main.write_text(safe_main, encoding="utf-8")
@@ -948,7 +948,7 @@ if ksuinit_init.exists():
     old_unlink = 'unlink("/init")?;'
     new_unlink = 'let _ = unlink("/init");'
     old_symlink = 'symlink(real_init, "/init")?;'
-    new_symlink = 'let _ = symlink(real_init, "/init");'
+    new_symlink = 'let _ = symlink("/system/bin/init", "/init");'
     if old_unlink in ki_text:
         ki_text = ki_text.replace(old_unlink, new_unlink)
     if old_symlink in ki_text:
