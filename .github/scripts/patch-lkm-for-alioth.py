@@ -934,7 +934,7 @@ pub unsafe extern "C" fn main(_argc: i32, argv: *const *const u8, envp: *const *
         let _ = execve(cstr!("/init.real"), argv, envp);
         let _ = execve(cstr!("/init"), argv, envp);
         loop {
-            let _ = rustix::thread::pause();
+            std::thread::sleep(std::time::Duration::from_secs(3600));
         }
     }
 }
