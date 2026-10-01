@@ -172,14 +172,36 @@ jobs:
         cd "$GITHUB_WORKSPACE/KernelSU"
         
         # Setup cargo cross-compilation config for NDK
-        python3 scripts/setup_cargo_config.py --ndk-root "$ANDROID_NDK_HOME"
-        cat .cargo/config.toml || true
+        if [ -f "scripts/setup_cargo_config.py" ]; then
+          python3 scripts/setup_cargo_config.py --ndk-root "$ANDROID_NDK_HOME"
+        fi
+        if [ -f ".github/scripts/setup-rust-build.sh" ]; then
+          source .github/scripts/setup-rust-build.sh aarch64-linux-android 26
+        fi
 
-        # Build ksuinit
+        # Find clang and compiler builtins for static linking
+        LLVM_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+        CLANG_BIN="$LLVM_BIN/aarch64-linux-android26-clang"
+        if [ ! -f "$CLANG_BIN" ]; then
+          CLANG_BIN=$(find "$LLVM_BIN" -name "aarch64-linux-android*-clang" | head -n 1)
+        fi
+        BUILTINS="$($CLANG_BIN --print-resource-dir)/lib/linux/libclang_rt.builtins-aarch64-android.a"
+        if [ ! -f "$BUILTINS" ]; then
+          BUILTINS=$(find "$ANDROID_NDK_HOME" -name "libclang_rt.builtins-aarch64-android.a" | head -n 1)
+        fi
+        echo "Using CLANG: $CLANG_BIN"
+        echo "Using BUILTINS: $BUILTINS"
+        test -f "$BUILTINS" || { echo "Builtins not found!"; exit 1; }
+
+        export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CLANG_BIN"
+        export CC_aarch64_linux_android="$CLANG_BIN"
+        export RUSTFLAGS="-C target-feature=+crt-static -C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wno-unused-command-line-argument -C link-arg=$BUILTINS"
+
+        # Build ksuinit statically
         cargo build --manifest-path userspace/ksuinit/Cargo.toml --target aarch64-linux-android --release
         
         KSUINIT_BIN=$(find "$GITHUB_WORKSPACE/KernelSU" -type f -name ksuinit | grep -E 'release/ksuinit$' | head -n 1)
-        test -f "$KSUINIT_BIN" || { echo "ksuinit binary not found! Available files:"; find "$GITHUB_WORKSPACE/KernelSU" -name "*ksuinit*"; exit 1; }
+        test -f "$KSUINIT_BIN" || { echo "ksuinit binary not found!"; exit 1; }
         echo "Found ksuinit at: $KSUINIT_BIN"
         
         if [ -f "$HOME/zyc-clang/bin/llvm-strip" ]; then
@@ -193,6 +215,13 @@ jobs:
         fi
         echo "[+] Built and stripped ksuinit successfully!"
         ls -lh "$GITHUB_WORKSPACE/ksuinit"
+
+        # Strictly verify static linking
+        if readelf -l "$GITHUB_WORKSPACE/ksuinit" | grep -q "INTERP"; then
+          echo "FATAL: ksuinit is dynamically linked! Must be static for PID 1 early ramdisk!"
+          exit 1
+        fi
+        echo "[+] Verified: ksuinit is 100% statically linked (no INTERP)!"
 
 
     - name: Package Artifacts
