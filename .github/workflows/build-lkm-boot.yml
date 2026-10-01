@@ -64,6 +64,10 @@ jobs:
         wget -q https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260807-release/Clang-16.0.6-20260807.tar.gz
         tar -zxvf Clang-16.0.6-20260807.tar.gz
 
+    - name: Add Clang to PATH
+      run: |
+        echo "$HOME/zyc-clang/bin" >> $GITHUB_PATH
+
     - name: Apply Symbol Patch & Configure Kernel Tree
       run: |
         python3 _ci/.github/scripts/patch-lkm-for-alioth.py
@@ -178,9 +182,18 @@ jobs:
         test -f "$KSUINIT_BIN" || { echo "ksuinit binary not found! Available files:"; find "$GITHUB_WORKSPACE/KernelSU" -name "*ksuinit*"; exit 1; }
         echo "Found ksuinit at: $KSUINIT_BIN"
         
-        llvm-strip --strip-all "$KSUINIT_BIN" -o "$GITHUB_WORKSPACE/ksuinit"
+        if [ -f "$HOME/zyc-clang/bin/llvm-strip" ]; then
+          "$HOME/zyc-clang/bin/llvm-strip" --strip-all "$KSUINIT_BIN" -o "$GITHUB_WORKSPACE/ksuinit"
+        elif command -v llvm-strip >/dev/null 2>&1; then
+          llvm-strip --strip-all "$KSUINIT_BIN" -o "$GITHUB_WORKSPACE/ksuinit"
+        elif command -v aarch64-linux-gnu-strip >/dev/null 2>&1; then
+          aarch64-linux-gnu-strip --strip-all "$KSUINIT_BIN" -o "$GITHUB_WORKSPACE/ksuinit"
+        else
+          cp "$KSUINIT_BIN" "$GITHUB_WORKSPACE/ksuinit"
+        fi
         echo "[+] Built and stripped ksuinit successfully!"
         ls -lh "$GITHUB_WORKSPACE/ksuinit"
+
 
     - name: Package Artifacts
       run: |
