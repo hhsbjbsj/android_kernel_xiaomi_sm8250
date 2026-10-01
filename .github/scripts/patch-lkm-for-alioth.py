@@ -48,11 +48,6 @@ static inline long ksu_compat_do_mount(const char *dev_name, const char __user *
 	return fn((const char __user *)dev_name, dir_name, (const char __user *)type_page, flags, (void __user *)data_page);
 }
 #define do_mount ksu_compat_do_mount
-
-#ifdef ksu_grab_init_session_keyring
-#undef ksu_grab_init_session_keyring
-#endif
-#define ksu_grab_init_session_keyring() do { } while (0)
 #endif
 """
     if "__KSU_KASLR_SLIDE_HELPER" not in kc_text:
@@ -61,6 +56,27 @@ static inline long ksu_compat_do_mount(const char *dev_name, const char __user *
     if "extern void commit_creds" in kc_text:
         kc_text = kc_text.replace("extern void commit_creds(struct cred *);", "extern int commit_creds(struct cred *);")
         print("[+] Fixed commit_creds return type to int in kernel_compat.h!")
+    
+    # Stub ksu_grab_init_session_keyring to avoid unexported install_session_keyring_to_cred
+    keyring_start = "static void ksu_grab_init_session_keyring()\n{"
+    if keyring_start in kc_text:
+        idx = kc_text.index(keyring_start)
+        brace_count = 0
+        end_idx = idx + len(keyring_start)
+        for i in range(idx + len(keyring_start) - 1, len(kc_text)):
+            if kc_text[i] == '{':
+                brace_count += 1
+            elif kc_text[i] == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    end_idx = i + 1
+                    break
+        stub_keyring = """static void ksu_grab_init_session_keyring(void)
+{
+	return;
+}"""
+        kc_text = kc_text[:idx] + stub_keyring + kc_text[end_idx:]
+        print("[+] Stubbed ksu_grab_init_session_keyring in kernel_compat.h!")
     kc_h.write_text(kc_text, encoding="utf-8")
 
 # 1. Patch kallsyms_common.h to inject dynamic KASLR symbol table
@@ -205,10 +221,10 @@ if vp_h.exists():
 #include <linux/mm.h>
 #include <linux/vmalloc.h>
 #include <linux/slab.h>
+#include <asm/memory.h>
+#include <asm/page.h>
 
 extern u64 kimage_voffset;
-extern u64 memstart_addr;
-extern bool pfn_valid(unsigned long pfn);
 
 static inline struct page *ksu_virt_to_page(uintptr_t vaddr)
 {
