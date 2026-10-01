@@ -403,9 +403,8 @@ static syscall_fn_t aarch64_faccessat __read_mostly = nullptr;
 asmlinkage long hook_aarch64_faccessat(const struct pt_regs *regs)
 {
 	const char __user **filename = (const char __user **)&regs->regs[1];
-	int *mode = (int *)&regs->regs[2];
 
-	ksu_handle_sys_faccessat(filename, mode);
+	ksu_handle_faccessat(NULL, filename, NULL, NULL);
 	return aarch64_faccessat ? aarch64_faccessat(regs) : ((syscall_fn_t)(0xffffff80102dfcc4UL + get_kaslr_slide()))(regs);
 }
 
@@ -413,21 +412,20 @@ static syscall_fn_t aarch64_newfstatat __read_mostly = nullptr;
 asmlinkage long hook_aarch64_newfstatat(const struct pt_regs *regs)
 {
 	const char __user **filename = (const char __user **)&regs->regs[1];
-	int *flags = (int *)&regs->regs[3];
 
-	ksu_handle_sys_newfstatat(filename, flags);
+	ksu_handle_stat(NULL, filename, NULL);
 	return aarch64_newfstatat ? aarch64_newfstatat(regs) : ((syscall_fn_t)(0xffffff80102eb2a0UL + get_kaslr_slide()))(regs);
 }
 
 static syscall_fn_t aarch64_newfstat __read_mostly = nullptr;
 asmlinkage long hook_aarch64_newfstat_ret(const struct pt_regs *regs)
 {
-	unsigned int fd = (unsigned int)regs->regs[0];
-	struct stat __user *statbuf = (struct stat __user *)regs->regs[1];
+	unsigned int *fd = (unsigned int *)&regs->regs[0];
+	struct stat __user **statbuf = (struct stat __user **)&regs->regs[1];
 
 	long ret = aarch64_newfstat ? aarch64_newfstat(regs) : ((syscall_fn_t)(0xffffff80102eb33cUL + get_kaslr_slide()))(regs);
 	if (!ret) {
-		ksu_handle_sys_newfstat_ret(fd, statbuf);
+		ksu_handle_newfstat_ret(fd, statbuf);
 	}
 	return ret;
 }
@@ -436,14 +434,10 @@ static syscall_fn_t aarch64_read __read_mostly = nullptr;
 asmlinkage long hook_aarch64_read(const struct pt_regs *regs)
 {
 	unsigned int fd = (unsigned int)regs->regs[0];
-	char __user *buf = (char __user *)regs->regs[1];
-	size_t count = (size_t)regs->regs[2];
 
-	long ret = aarch64_read ? aarch64_read(regs) : ((syscall_fn_t)(0xffffff80102e2550UL + get_kaslr_slide()))(regs);
-	if (ret > 0) {
-		ksu_handle_sys_read(fd, buf, count);
-	}
-	return ret;
+	ksu_handle_sys_read_fd(fd);
+
+	return aarch64_read ? aarch64_read(regs) : ((syscall_fn_t)(0xffffff80102e2550UL + get_kaslr_slide()))(regs);
 }
 
 static syscall_fn_t armeabi_execve __read_mostly = nullptr;
@@ -474,9 +468,8 @@ static syscall_fn_t armeabi_faccessat __read_mostly = nullptr;
 asmlinkage long hook_armeabi_faccessat(const struct pt_regs *regs)
 {
 	const char __user **filename = (const char __user **)&regs->regs[1];
-	int *mode = (int *)&regs->regs[2];
 
-	ksu_handle_sys_faccessat(filename, mode);
+	ksu_handle_faccessat(NULL, filename, NULL, NULL);
 	return armeabi_faccessat ? armeabi_faccessat(regs) : ((syscall_fn_t)(0xffffff80102dfcc4UL + get_kaslr_slide()))(regs);
 }
 
@@ -484,21 +477,20 @@ static syscall_fn_t armeabi_fstatat64 __read_mostly = nullptr;
 asmlinkage long hook_armeabi_fstatat64(const struct pt_regs *regs)
 {
 	const char __user **filename = (const char __user **)&regs->regs[1];
-	int *flags = (int *)&regs->regs[3];
 
-	ksu_handle_sys_newfstatat(filename, flags);
+	ksu_handle_stat(NULL, filename, NULL);
 	return armeabi_fstatat64 ? armeabi_fstatat64(regs) : ((syscall_fn_t)(0xffffff80102eb650UL + get_kaslr_slide()))(regs);
 }
 
 static syscall_fn_t armeabi_fstat64 __read_mostly = nullptr;
 asmlinkage long hook_armeabi_fstat64_ret(const struct pt_regs *regs)
 {
-	unsigned int fd = (unsigned int)regs->regs[0];
-	void __user *statbuf = (void __user *)regs->regs[1];
+	unsigned long *fd = (unsigned long *)&regs->regs[0];
+	struct stat64 __user **statbuf = (struct stat64 __user **)&regs->regs[1];
 
 	long ret = armeabi_fstat64 ? armeabi_fstat64(regs) : ((syscall_fn_t)(0xffffff80102eb580UL + get_kaslr_slide()))(regs);
 	if (!ret) {
-		ksu_handle_sys_newfstat_ret(fd, (struct stat __user *)statbuf);
+		ksu_handle_fstat64_ret(fd, statbuf);
 	}
 	return ret;
 }
@@ -507,14 +499,9 @@ static syscall_fn_t armeabi_read __read_mostly = nullptr;
 asmlinkage long hook_armeabi_read(const struct pt_regs *regs)
 {
 	unsigned int fd = (unsigned int)regs->regs[0];
-	char __user *buf = (char __user *)regs->regs[1];
-	size_t count = (size_t)regs->regs[2];
 
-	long ret = armeabi_read ? armeabi_read(regs) : ((syscall_fn_t)(0xffffff80102e2550UL + get_kaslr_slide()))(regs);
-	if (ret > 0) {
-		ksu_handle_sys_read(fd, buf, count);
-	}
-	return ret;
+	ksu_handle_sys_read_fd(fd);
+	return armeabi_read ? armeabi_read(regs) : ((syscall_fn_t)(0xffffff80102e2550UL + get_kaslr_slide()))(regs);
 }
 
 static syscall_fn_t armeabi_reboot __read_mostly = nullptr;
@@ -531,6 +518,7 @@ asmlinkage long hook_armeabi_reboot(const struct pt_regs *regs)
 """
         sct_c.write_text(before + clean_419_block + "\n" + after, encoding="utf-8")
         print("[+] Replaced 4.19+ syscall handlers with dynamic KASLR in syscall_table_hook_arm64.c!")
+
 
 # 5. Patch util.h for ksyscall dispatch with dynamic KASLR slide
 ut_h = ksu_root / "kernel/include/util.h"
@@ -793,7 +781,11 @@ if ksu_c.exists():
         kc_text = enforce_tamper + kc_text
         print("[+] Enforced CONFIG_KSU_TAMPER_SYSCALL_TABLE in ksu.c!")
 
-    # 13b. Remove branch_link include block
+    # 13b. Remove branch_link definitions and include block
+    if "#define CONFIG_KSU_HACK_ARM64_BRANCH_LINK 1" in kc_text:
+        kc_text = kc_text.replace("#define CONFIG_KSU_HACK_ARM64_BRANCH_LINK 1", "// #define CONFIG_KSU_HACK_ARM64_BRANCH_LINK 1")
+        print("[+] Commented out CONFIG_KSU_HACK_ARM64_BRANCH_LINK 1 in ksu.c!")
+
     branch_include_block = """#ifdef CONFIG_KSU_HACK_ARM64_BRANCH_LINK
 #undef syscall_table_sucompat_enable
 #undef syscall_table_sucompat_disable
@@ -804,6 +796,10 @@ if ksu_c.exists():
         kc_text = kc_text.replace(branch_include_block, "/* branch_link disabled */")
         print("[+] Removed CONFIG_KSU_HACK_ARM64_BRANCH_LINK include block in ksu.c!")
 
+    if "ksu_branch_link_patch_init();" in kc_text:
+        kc_text = kc_text.replace("ksu_branch_link_patch_init();", "// ksu_branch_link_patch_init();")
+        print("[+] Disabled ksu_branch_link_patch_init() in ksu.c!")
+
     # 13c. Disable ksu_extend_module_blacklist() and kobject_del in kernelsu_lkm_init
     if "ksu_extend_module_blacklist();" in kc_text:
         kc_text = kc_text.replace("ksu_extend_module_blacklist();", "// ksu_extend_module_blacklist();")
@@ -813,6 +809,7 @@ if ksu_c.exists():
         print("[+] Disabled dangerous kobject_del() in ksu.c!")
 
     ksu_c.write_text(kc_text, encoding="utf-8")
+
 
 # 14. Patch ksuinit
 ksuinit_lib = ksu_root / "userspace/ksuinit/src/lib.rs"
