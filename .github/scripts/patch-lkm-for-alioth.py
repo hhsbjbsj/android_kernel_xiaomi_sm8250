@@ -717,7 +717,6 @@ void ksu_throne_tracker_init()
 		    strstr(np->package, "kernelsu")) {
 			pr_info("throne_tracker_fn: crowning %s (uid=%d) directly from packages.list!\\n", np->package, np->uid);
 			ksu_set_manager_appid(np->uid);
-			manager_exist = true;
 			goto prune;
 		}
 	}"""
