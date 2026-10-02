@@ -1054,6 +1054,34 @@ if shide_c.exists():
         shide_c.write_text(shide_text, encoding="utf-8")
         print("[+] Stubbed ksu_prepare_fake_status_page in selinux_hide.c!")
 
+# 12b. Patch feature/kernel_umount.c: purge weak unresolved symbol path_umount
+ku_c = ksu_root / "kernel/feature/kernel_umount.c"
+if ku_c.exists():
+    ku_text = ku_c.read_text(encoding="utf-8")
+    s_idx = ku_text.find("kernel_umount_handler")
+    e_idx = ku_text.find("static inline void try_umount")
+    if s_idx != -1 and e_idx != -1:
+        semi = ku_text.find("};", s_idx)
+        if semi != -1:
+            semi += 2
+            clean_umount = """
+
+static inline void ksu_umount_mnt(const char *mnt, struct path *path, int flags)
+{
+	mm_segment_t old_fs = get_fs();
+	set_fs(KERNEL_DS);
+	int err = (int)ksyscall(umount, (char __user *)mnt, flags);
+	set_fs(old_fs);
+	path_put(path);
+	if (err)
+		pr_info("umount %s failed: %d\\n", mnt, err);
+}
+
+"""
+            ku_text = ku_text[:semi] + clean_umount + ku_text[e_idx:]
+            ku_c.write_text(ku_text, encoding="utf-8")
+            print("[+] Purged path_umount from kernel_umount.c to prevent relocation overflow!")
+
 # 13. Patch ksu.c: enforce CONFIG_KSU_TAMPER_SYSCALL_TABLE and disable dangerous blacklist / kobject_del
 ksu_c = ksu_root / "kernel/ksu.c"
 if ksu_c.exists():
@@ -1131,55 +1159,85 @@ if ksuinit_lib.exists():
 
     # 14c. Dynamic KASLR fallback table in ksuinit
     new_load_mod = """    let mut kaslr_slide: u64 = 0;
-    if !unresolved_symbols.is_empty() {
-        let _ = for_each_kernel_symbols(|(symbol, addr)| {
-            if *addr != 0 {
-                if kaslr_slide == 0 {
-                    if symbol == "commit_creds" && *addr >= 0xffffff80100ef930 {
-                        kaslr_slide = *addr - 0xffffff80100ef930;
-                    } else if symbol == "init_cred" && *addr >= 0xffffff8012a2dd58 {
-                        kaslr_slide = *addr - 0xffffff8012a2dd58;
-                    } else if symbol == "sys_call_table" && *addr >= 0xffffff8011a00880 {
-                        kaslr_slide = *addr - 0xffffff8011a00880;
-                    }
-                }
-                if let Some((mut sym, offset)) = unresolved_symbols.remove(symbol) {
-                    sym.st_shndx = section_header::SHN_ABS as usize;
-                    sym.st_value = *addr;
-                    let _ = buffer.pwrite_with(sym, offset, ctx);
+    let _ = for_each_kernel_symbols(|(symbol, addr)| {
+        if *addr != 0 {
+            if kaslr_slide == 0 {
+                if symbol == "_text" && *addr >= 0xffffff8010080000 {
+                    kaslr_slide = *addr - 0xffffff8010080000;
+                } else if symbol == "_stext" && *addr >= 0xffffff8010080800 {
+                    kaslr_slide = *addr - 0xffffff8010080800;
+                } else if symbol == "commit_creds" && *addr >= 0xffffff80100ef930 {
+                    kaslr_slide = *addr - 0xffffff80100ef930;
+                } else if symbol == "printk" && *addr >= 0xffffff80119ae4e8 {
+                    kaslr_slide = *addr - 0xffffff80119ae4e8;
+                } else if symbol == "schedule" && *addr >= 0xffffff80119b16e4 {
+                    kaslr_slide = *addr - 0xffffff80119b16e4;
+                } else if symbol == "sys_call_table" && *addr >= 0xffffff8011a00880 {
+                    kaslr_slide = *addr - 0xffffff8011a00880;
                 }
             }
-            Ok(!unresolved_symbols.is_empty())
-        });
-    }
+            if let Some((mut sym, offset)) = unresolved_symbols.remove(symbol) {
+                sym.st_shndx = section_header::SHN_ABS as usize;
+                sym.st_value = *addr;
+                let _ = buffer.pwrite_with(sym, offset, ctx);
+                log::info!("Resolved symbol from kallsyms: {} -> 0x{:x}", symbol, *addr);
+            }
+        }
+        Ok(!unresolved_symbols.is_empty() || kaslr_slide == 0)
+    });
 
-    let hardcoded_bases: [(&str, u64); 27] = [
-        ("sys_call_table", 0xffffff8011a00880),
-        ("compat_sys_call_table", 0xffffff8011a045f0),
-        ("__arm64_sys_reboot", 0xffffff80100f08dc),
+    log::info!("Dynamic KASLR slide detected: 0x{:x}", kaslr_slide);
+
+    let hardcoded_bases: [(&str, u64); 50] = [
+        ("__arm64_compat_sys_execve", 0xffffff80102eeb24),
+        ("__arm64_compat_sys_execveat", 0xffffff80102eeb74),
+        ("__arm64_sys_close", 0xffffff80102e13bc),
         ("__arm64_sys_execve", 0xffffff80102eea68),
         ("__arm64_sys_execveat", 0xffffff80102eeab8),
         ("__arm64_sys_faccessat", 0xffffff80102dfcc4),
-        ("__arm64_sys_newfstatat", 0xffffff80102eb2a0),
-        ("__arm64_sys_newfstat", 0xffffff80102eb33c),
-        ("__arm64_sys_read", 0xffffff80102e2550),
-        ("__arm64_sys_close", 0xffffff80102e13bc),
-        ("__arm64_compat_sys_execve", 0xffffff80102eeb24),
-        ("__arm64_compat_sys_execveat", 0xffffff80102eeb74),
-        ("__arm64_sys_fstatat64", 0xffffff80102eb650),
-        ("__arm64_sys_fstat64", 0xffffff80102eb580),
-        ("__arm64_sys_init_module", 0xffffff80101906ec),
         ("__arm64_sys_finit_module", 0xffffff80101908a0),
-        ("__arm64_sys_unshare", 0xffffff80100c0058),
+        ("__arm64_sys_fstat64", 0xffffff80102eb580),
+        ("__arm64_sys_fstatat64", 0xffffff80102eb650),
+        ("__arm64_sys_init_module", 0xffffff80101906ec),
+        ("__arm64_sys_newfstat", 0xffffff80102eb33c),
+        ("__arm64_sys_newfstatat", 0xffffff80102eb2a0),
+        ("__arm64_sys_prctl", 0xffffff80100def50),
+        ("__arm64_sys_read", 0xffffff80102e2550),
+        ("__arm64_sys_reboot", 0xffffff80100f08dc),
         ("__arm64_sys_setns", 0xffffff80100ee0c0),
         ("__arm64_sys_umount", 0xffffff80103104f0),
+        ("__arm64_sys_unshare", 0xffffff80100c0058),
+        ("_etext", 0xffffff8011a00000),
+        ("_stext", 0xffffff8010080800),
+        ("_text", 0xffffff8010080000),
+        ("aarch64_get_branch_offset", 0xffffff8010095a58),
+        ("aarch64_insn_gen_branch_imm", 0xffffff80100947c0),
+        ("aarch64_insn_patch_text", 0xffffff8010094420),
+        ("avc_ss_reset", 0xffffff801054d32c),
+        ("avtab_alloc", 0xffffff8010560ad0),
+        ("avtab_destroy", 0xffffff8010560a00),
+        ("avtab_insert_nonunique", 0xffffff80105603a0),
+        ("avtab_search_node", 0xffffff801056081c),
+        ("avtab_search_node_next", 0xffffff8010560980),
         ("commit_creds", 0xffffff80100ef930),
+        ("compat_sys_call_table", 0xffffff8011a045f0),
+        ("ebitmap_get_bit", 0xffffff801055e754),
+        ("ebitmap_set_bit", 0xffffff801055e7b0),
+        ("hashtab_insert", 0xffffff801055ef40),
+        ("hashtab_search", 0xffffff801055f074),
         ("init_cred", 0xffffff8012a2dd58),
         ("kallsyms_lookup_name", 0xffffff8010196aa8),
-        ("kallsyms_on_each_symbol", 0xffffff8010196c64),
         ("kallsyms_lookup_size_offset", 0xffffff8010196e28),
+        ("kallsyms_on_each_symbol", 0xffffff8010196c64),
+        ("ksys_unshare", 0xffffff80100bfd84),
         ("module_blacklist", 0xffffff8012dc54e8),
         ("security_hook_heads", 0xffffff8012688a08),
+        ("selinux_blob_sizes", 0xffffff8012689070),
+        ("selinux_state", 0xffffff8012dec928),
+        ("selinux_status_update_policyload", 0xffffff801056ea00),
+        ("selnl_notify_policyload", 0xffffff801055d610),
+        ("stext", 0xffffff8012800000),
+        ("sys_call_table", 0xffffff8011a00880),
         ("task_fix_setuid", 0xffffff8012688cf0),
     ];
     for (name, base_addr) in hardcoded_bases {
@@ -1187,7 +1245,7 @@ if ksuinit_lib.exists():
             sym.st_shndx = section_header::SHN_ABS as usize;
             sym.st_value = base_addr + kaslr_slide;
             let _ = buffer.pwrite_with(sym, offset, ctx);
-            log::info!("Hardcoded symbol {} -> 0x{:x}", name, base_addr + kaslr_slide);
+            log::info!("Hardcoded symbol fallback {} -> 0x{:x}", name, base_addr + kaslr_slide);
         }
     }
 
@@ -1242,8 +1300,10 @@ if ksuinit_init.exists():
         ki_text = ki_text.replace(old_unlink, new_unlink)
     if old_symlink in ki_text:
         ki_text = ki_text.replace(old_symlink, new_symlink)
+    if "unlimit_kmsg();" in ki_text and "kptr_restrict" not in ki_text:
+        ki_text = ki_text.replace("unlimit_kmsg();", 'unlimit_kmsg();\\n    let _ = std::fs::write("/proc/sys/kernel/kptr_restrict", "0");')
     ksuinit_init.write_text(ki_text, encoding="utf-8")
-    print("[+] Made unlink and symlink non-fatal in ksuinit init.rs!")
+    print("[+] Made unlink and symlink non-fatal and set kptr_restrict in ksuinit init.rs!")
 
 # 16. Patch Makefile: obj-m := ksu.o and CONFIG_KSU_TAMPER_SYSCALL_TABLE and KSU 32653 certs
 mk_path = ksu_root / "kernel/Makefile"
