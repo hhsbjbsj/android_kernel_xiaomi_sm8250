@@ -959,7 +959,7 @@ if disp_c.exists():
 	cmd.version = 32653;
 
 	if (copy_to_user(arg, &cmd, sizeof(cmd))) {
-		pr_err("get_version: copy_to_user failed\n");
+		pr_err("get_version: copy_to_user failed\\n");
 		return -EFAULT;
 	}
 
