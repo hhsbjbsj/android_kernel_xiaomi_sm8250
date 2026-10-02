@@ -84,18 +84,14 @@ hdr_path = ksu_root / "kernel/downstream/kallsyms_common.h"
 if hdr_path.exists():
     text = hdr_path.read_text(encoding="utf-8")
     hardcoded_table = """
-#ifndef _stext
-#define _stext ((char *)(0xffffff8010080000UL + get_kaslr_slide()))
-#endif
-#ifndef _etext
-#define _etext ((char *)(0xffffff8011c00000UL + get_kaslr_slide()))
-#endif
-
 // Hardcoded symbol table for 4.19.325-Ikun-KirinNova with Dynamic KASLR Slide
 static uintptr_t get_hardcoded_symbol(const char *name)
 {
     if (!name) return 0;
     uintptr_t slide = get_kaslr_slide();
+
+    if (!strcmp(name, "_stext")) return 0xffffff8010080000UL + slide;
+    if (!strcmp(name, "_etext")) return 0xffffff8011c00000UL + slide;
 
     // Credentials & UID
     if (!strcmp(name, "commit_creds")) return 0xffffff80100ef930UL + slide;
@@ -178,9 +174,7 @@ static uintptr_t get_hardcoded_symbol(const char *name)
         hdr_path.write_text(text, encoding="utf-8")
         print("[+] Patched kallsyms_common.h with dynamic KASLR symbols!")
     else:
-        start_fn = "#ifndef _stext"
-        if start_fn not in text:
-            start_fn = "static uintptr_t get_hardcoded_symbol(const char *name)"
+        start_fn = "#ifndef _stext" if "#ifndef _stext" in text else "static uintptr_t get_hardcoded_symbol(const char *name)"
         end_fn = "return 0;\n}\n"
         if start_fn in text and end_fn in text:
             idx1 = text.index(start_fn)
@@ -1290,7 +1284,7 @@ if ksuinit_lib.exists():
         });
     }
 
-    let hardcoded_bases: [(&str, u64); 28] = [
+    let hardcoded_bases: [(&str, u64); 30] = [
         ("sys_call_table", 0xffffff8011a00880),
         ("compat_sys_call_table", 0xffffff8011a045f0),
         ("__arm64_sys_reboot", 0xffffff80100f08dc),
@@ -1319,6 +1313,8 @@ if ksuinit_lib.exists():
         ("module_blacklist", 0xffffff8012dc54e8),
         ("security_hook_heads", 0xffffff8012688a08),
         ("task_fix_setuid", 0xffffff8012688cf0),
+        ("_stext", 0xffffff8010080000),
+        ("_etext", 0xffffff8011c00000),
     ];
     for (name, base_addr) in hardcoded_bases {
         if let Some((mut sym, offset)) = unresolved_symbols.remove(name) {
@@ -1397,14 +1393,15 @@ if mk_path.exists():
             "obj-$(CONFIG_KSU) := ksu.o\nobj-m := ksu.o\nCFLAGS_ksu.o += -DCONFIG_KSU_TAMPER_SYSCALL_TABLE=1\n",
             1
         )
-    if "-DKSU_VERSION=32651" in mk_text:
-        mk_text = mk_text.replace("-DKSU_VERSION=32651", "-DKSU_VERSION=32653")
-    elif "-DKSU_VERSION=" not in mk_text:
+    import re
+    if "-DKSU_VERSION=" in mk_text:
+        mk_text = re.sub(r'-DKSU_VERSION=\d+', '-DKSU_VERSION=32653', mk_text)
+    else:
         mk_text = "CFLAGS_ksu.o += -DKSU_VERSION=32653\n" + mk_text
 
     # Align signature size and hash
-    mk_text = mk_text.replace("KSU_EXPECTED_SIZE := 0x033b", "KSU_EXPECTED_SIZE := 0x0363")
-    mk_text = mk_text.replace("c371061b19d8c7d7d6133c6a9bafe198fa944e50c1b31c9d8daa8d7f1fc2d2d6", "4359c171f32543394cbc23ef908c4bb94cad7c8087002ba164c8230948c21549")
+    mk_text = re.sub(r'KSU_EXPECTED_SIZE := 0x[0-9a-fA-F]+', 'KSU_EXPECTED_SIZE := 0x0363', mk_text)
+    mk_text = re.sub(r'KSU_EXPECTED_HASH := [0-9a-fA-F]+', 'KSU_EXPECTED_HASH := 4359c171f32543394cbc23ef908c4bb94cad7c8087002ba164c8230948c21549', mk_text)
 
     mk_path.write_text(mk_text, encoding="utf-8")
     print("[+] Updated KernelSU/kernel/Makefile to KSU_VERSION=32653 and matching certificate hash!")
