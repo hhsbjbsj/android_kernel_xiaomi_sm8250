@@ -1300,8 +1300,10 @@ if ksuinit_init.exists():
         ki_text = ki_text.replace(old_unlink, new_unlink)
     if old_symlink in ki_text:
         ki_text = ki_text.replace(old_symlink, new_symlink)
+    if "\\n" in ki_text:
+        ki_text = ki_text.replace("\\n", "\n")
     if "unlimit_kmsg();" in ki_text and "kptr_restrict" not in ki_text:
-        ki_text = ki_text.replace("unlimit_kmsg();", 'unlimit_kmsg();\\n    let _ = std::fs::write("/proc/sys/kernel/kptr_restrict", "0");')
+        ki_text = ki_text.replace("unlimit_kmsg();", "unlimit_kmsg();\n    let _ = std::fs::write(\"/proc/sys/kernel/kptr_restrict\", \"0\");")
     ksuinit_init.write_text(ki_text, encoding="utf-8")
     print("[+] Made unlink and symlink non-fatal and set kptr_restrict in ksuinit init.rs!")
 
