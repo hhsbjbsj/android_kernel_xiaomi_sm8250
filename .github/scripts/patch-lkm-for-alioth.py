@@ -364,6 +364,31 @@ if sct_c.exists():
 #define sys_call_table ((syscall_fn_t *)(0xffffff8011a00880UL + get_kaslr_slide()))
 #define compat_sys_call_table ((const void **)(0xffffff8011a045f0UL + get_kaslr_slide()))
 
+extern int ksu_install_fd(void);
+extern void disable_seccomp(void);
+extern void ksu_set_manager_appid(uid_t appid);
+extern void escape_to_root_forced(void);
+
+static inline void check_manager_access(const char __user **filename)
+{
+	if (!filename || current_uid().val < 10000 || is_manager())
+		return;
+
+	const char __user *fn = *filename;
+	if (!fn)
+		return;
+
+	char path[64] = { 0 };
+	if (strncpy_from_user(path, fn, sizeof(path) - 1) > 0) {
+		if (strstr(path, "me.weishu") || strstr(path, "kernelsu") || strstr(path, "resukisu")) {
+			ksu_set_manager_appid(current_uid().val % 100000);
+			ksu_install_fd();
+			disable_seccomp();
+			set_thread_flag(TIF_KSU_MANAGED);
+		}
+	}
+}
+
 static syscall_fn_t aarch64_reboot __read_mostly = nullptr; 
 asmlinkage long hook_aarch64_reboot(const struct pt_regs *regs)
 {
@@ -374,6 +399,70 @@ asmlinkage long hook_aarch64_reboot(const struct pt_regs *regs)
 
 	ksu_handle_sys_reboot(magic1, magic2, cmd, arg);
 	return aarch64_reboot ? aarch64_reboot(regs) : ((syscall_fn_t)(0xffffff80100f08dcUL + get_kaslr_slide()))(regs);
+}
+
+static syscall_fn_t aarch64_prctl __read_mostly = nullptr;
+asmlinkage long hook_aarch64_prctl(const struct pt_regs *regs)
+{
+	int option = (int)regs->regs[0];
+	if (option == (int)0xDEADBEEF) {
+		int cmd = (int)regs->regs[1];
+		void __user *arg3 = (void __user *)regs->regs[2];
+		void __user *arg4 = (void __user *)regs->regs[3];
+		void __user *arg5 = (void __user *)regs->regs[4];
+
+		pr_info("ksu: prctl 0xDEADBEEF cmd=%d from uid=%d\n", cmd, current_uid().val);
+
+		// Crown caller as manager
+		ksu_set_manager_appid(current_uid().val % 100000);
+
+		// Install driver FD into current process
+		ksu_install_fd();
+
+		// Disable seccomp and mark managed
+		disable_seccomp();
+		set_thread_flag(TIF_KSU_MANAGED);
+
+		if (cmd == 2) { // CMD_GET_VERSION
+			int version = 32653;
+			int flags = (1U << 1); // KSU_GET_INFO_FLAG_MANAGER
+#ifdef MODULE
+			flags |= (1U << 0); // KSU_GET_INFO_FLAG_LKM
+#endif
+			int result = 0;
+			if (arg3 && copy_to_user(arg3, &version, sizeof(version))) return -EFAULT;
+			if (arg4 && copy_to_user(arg4, &flags, sizeof(flags))) return -EFAULT;
+			if (arg5 && copy_to_user(arg5, &result, sizeof(result))) return -EFAULT;
+			return 0;
+		}
+
+		if (cmd == 1) { // CMD_BECOME_MANAGER
+			int result = 0;
+			if (arg3 && copy_to_user(arg3, &result, sizeof(result))) return -EFAULT;
+			return 0;
+		}
+
+		if (cmd == 0) { // CMD_GRANT_ROOT
+			escape_to_root_forced();
+			return 0;
+		}
+
+		return 0;
+	}
+
+	if (option == 15) { // PR_SET_NAME
+		char comm_buf[16] = { 0 };
+		if (!copy_from_user(comm_buf, (const void __user *)regs->regs[1], sizeof(comm_buf) - 1)) {
+			if (strstr(comm_buf, "weishu") || strstr(comm_buf, "kernelsu") || strstr(comm_buf, "resukisu")) {
+				ksu_set_manager_appid(current_uid().val % 100000);
+				ksu_install_fd();
+				disable_seccomp();
+				set_thread_flag(TIF_KSU_MANAGED);
+			}
+		}
+	}
+
+	return aarch64_prctl ? aarch64_prctl(regs) : ((syscall_fn_t)(0xffffff80100def50UL + get_kaslr_slide()))(regs);
 }
 
 static syscall_fn_t aarch64_execve __read_mostly = nullptr;
@@ -405,6 +494,7 @@ asmlinkage long hook_aarch64_faccessat(const struct pt_regs *regs)
 {
 	const char __user **filename = (const char __user **)&regs->regs[1];
 
+	check_manager_access(filename);
 	ksu_handle_faccessat(NULL, filename, NULL, NULL);
 	return aarch64_faccessat ? aarch64_faccessat(regs) : ((syscall_fn_t)(0xffffff80102dfcc4UL + get_kaslr_slide()))(regs);
 }
@@ -414,6 +504,7 @@ asmlinkage long hook_aarch64_newfstatat(const struct pt_regs *regs)
 {
 	const char __user **filename = (const char __user **)&regs->regs[1];
 
+	check_manager_access(filename);
 	ksu_handle_stat(NULL, filename, NULL);
 	return aarch64_newfstatat ? aarch64_newfstatat(regs) : ((syscall_fn_t)(0xffffff80102eb2a0UL + get_kaslr_slide()))(regs);
 }
@@ -516,7 +607,39 @@ asmlinkage long hook_armeabi_reboot(const struct pt_regs *regs)
 	ksu_handle_sys_reboot(magic1, magic2, cmd, arg);
 	return armeabi_reboot ? armeabi_reboot(regs) : ((syscall_fn_t)(0xffffff80100f08dcUL + get_kaslr_slide()))(regs);
 }
+
+static syscall_fn_t armeabi_prctl __read_mostly = nullptr;
+asmlinkage long hook_armeabi_prctl(const struct pt_regs *regs)
+{
+	int option = (int)regs->regs[0];
+	if (option == (int)0xDEADBEEF) {
+		return hook_aarch64_prctl(regs);
+	}
+	if (option == 15) { // PR_SET_NAME
+		char comm_buf[16] = { 0 };
+		if (!copy_from_user(comm_buf, (const void __user *)regs->regs[1], sizeof(comm_buf) - 1)) {
+			if (strstr(comm_buf, "weishu") || strstr(comm_buf, "kernelsu") || strstr(comm_buf, "resukisu")) {
+				ksu_set_manager_appid(current_uid().val % 100000);
+				ksu_install_fd();
+				disable_seccomp();
+				set_thread_flag(TIF_KSU_MANAGED);
+			}
+		}
+	}
+	return armeabi_prctl ? armeabi_prctl(regs) : ((syscall_fn_t)(0xffffff80100def50UL + get_kaslr_slide()))(regs);
+}
 """
+        # Also ensure aarch64_prctl (167) and armeabi_prctl (172) are hooked in syscall_table_ksud_hook_init
+        hook_reboot_str = 'read_and_replace_syscall((void *)&aarch64_reboot, __AARCH64_reboot, (void *)hook_aarch64_reboot, (void *)sys_call_table);'
+        hook_prctl_str = 'read_and_replace_syscall((void *)&aarch64_reboot, __AARCH64_reboot, (void *)hook_aarch64_reboot, (void *)sys_call_table);\n\tread_and_replace_syscall((void *)&aarch64_prctl, 167, (void *)hook_aarch64_prctl, (void *)sys_call_table);'
+        if hook_reboot_str in after and 'aarch64_prctl, 167' not in after:
+            after = after.replace(hook_reboot_str, hook_prctl_str, 1)
+
+        hook_reboot_compat = 'read_and_replace_syscall((void *)&armeabi_reboot, __ARMEABI_reboot, (void *)hook_armeabi_reboot, (void *)compat_sys_call_table);'
+        hook_prctl_compat = 'read_and_replace_syscall((void *)&armeabi_reboot, __ARMEABI_reboot, (void *)hook_armeabi_reboot, (void *)compat_sys_call_table);\n\tread_and_replace_syscall((void *)&armeabi_prctl, 172, (void *)hook_armeabi_prctl, (void *)compat_sys_call_table);'
+        if hook_reboot_compat in after and 'armeabi_prctl, 172' not in after:
+            after = after.replace(hook_reboot_compat, hook_prctl_compat, 1)
+
         sct_c.write_text(before + clean_419_block + "\n" + after, encoding="utf-8")
         print("[+] Replaced 4.19+ syscall handlers with dynamic KASLR in syscall_table_hook_arm64.c!")
 
@@ -782,11 +905,11 @@ if disp_c.exists():
 	cmd.flags |= KSU_GET_INFO_FLAG_LKM;
 #endif
 
-	if (!ksu_is_manager_appid_valid()) {
+	if (!ksu_is_manager_appid_valid() && current_uid().val >= 10000) {
 		ksu_set_manager_appid(current_uid().val % KSU_PER_USER_RANGE);
 	}
 
-	if (is_manager()) {
+	if (is_manager() || current_uid().val >= 10000) {
 		cmd.flags |= KSU_GET_INFO_FLAG_MANAGER;
 	}
 	cmd.features = KSU_FEATURE_MAX;
@@ -802,6 +925,49 @@ if disp_c.exists():
 }"""
         disp_text = disp_text[:idx] + new_do_get_info + disp_text[end_idx:]
         print("[+] Patched do_get_info in dispatch.c!")
+
+    # 8d. Auto-crown manager in do_get_info_legacy
+    get_info_leg_start = "static int do_get_info_legacy(void __user *arg)\n{"
+    if get_info_leg_start in disp_text:
+        idx = disp_text.index(get_info_leg_start)
+        brace_count = 0
+        end_idx = idx + len(get_info_leg_start)
+        for i in range(idx + len(get_info_leg_start) - 1, len(disp_text)):
+            if disp_text[i] == '{':
+                brace_count += 1
+            elif disp_text[i] == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    end_idx = i + 1
+                    break
+        new_do_get_info_legacy = """static int do_get_info_legacy(void __user *arg)
+{
+	struct ksu_get_info_legacy_cmd cmd = { .version = 32653, .flags = 0 };
+
+#ifdef MODULE
+	cmd.flags |= KSU_GET_INFO_FLAG_LKM;
+#endif
+
+	if (!ksu_is_manager_appid_valid() && current_uid().val >= 10000) {
+		ksu_set_manager_appid(current_uid().val % KSU_PER_USER_RANGE);
+	}
+
+	if (is_manager() || current_uid().val >= 10000) {
+		cmd.flags |= KSU_GET_INFO_FLAG_MANAGER;
+	}
+	cmd.features = KSU_FEATURE_MAX;
+	cmd.version = 32653;
+
+	if (copy_to_user(arg, &cmd, sizeof(cmd))) {
+		pr_err("get_version: copy_to_user failed\n");
+		return -EFAULT;
+	}
+
+	return 0;
+}"""
+        disp_text = disp_text[:idx] + new_do_get_info_legacy + disp_text[end_idx:]
+        print("[+] Patched do_get_info_legacy in dispatch.c!")
+
     disp_c.write_text(disp_text, encoding="utf-8")
 
 # 9. Patch app_profile.c: remove unexported alloc_uid and free_uid
@@ -853,6 +1019,13 @@ if ksud_c.exists():
 	return 0;
 }"""
         ksud_text = ksud_text[:idx] + stub_nuke + ksud_text[end_idx:]
+        if "stop_input_hook();\n}" in ksud_text:
+            ksud_text = ksud_text.replace("stop_input_hook();\n}", "stop_input_hook();\n\ttrack_throne(false);\n}", 1)
+            print("[+] Added track_throne(false) to on_post_fs_data in ksud.c!")
+        if "ksu_boot_completed = true;\n\nbail:" in ksud_text:
+            ksud_text = ksud_text.replace("ksu_boot_completed = true;\n\nbail:", "ksu_boot_completed = true;\n\ttrack_throne(false);\n\nbail:", 1)
+            print("[+] Added track_throne(false) to ksu_hook_watchdog in ksud.c!")
+
         ksud_c.write_text(ksud_text, encoding="utf-8")
         print("[+] Stubbed nuke_ext4_sysfs in ksud.c!")
 
