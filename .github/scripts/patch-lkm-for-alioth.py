@@ -246,7 +246,9 @@ static inline struct page *ksu_virt_to_page(uintptr_t vaddr)
 static inline void patch_ptr_slot_kick_cpu(void **target_slot, void *new_ptr)
 {
 	WRITE_ONCE(*target_slot, new_ptr);
+	asm volatile("dc cvac, %0" : : "r"(target_slot) : "memory");
 	smp_mb();
+	asm volatile("isb" : : : "memory");
 }
 
 static noinline int ksu_write_to_readonly_slot(uintptr_t slot_ptr, uintptr_t new_ptr)
@@ -629,16 +631,31 @@ asmlinkage long hook_armeabi_prctl(const struct pt_regs *regs)
 	return armeabi_prctl ? armeabi_prctl(regs) : ((syscall_fn_t)(0xffffff80100def50UL + get_kaslr_slide()))(regs);
 }
 """
-        # Also ensure aarch64_prctl (167) and armeabi_prctl (172) are hooked in syscall_table_ksud_hook_init
-        hook_reboot_str = 'read_and_replace_syscall((void *)&aarch64_reboot, __AARCH64_reboot, (void *)hook_aarch64_reboot, (void *)sys_call_table);'
-        hook_prctl_str = 'read_and_replace_syscall((void *)&aarch64_reboot, __AARCH64_reboot, (void *)hook_aarch64_reboot, (void *)sys_call_table);\n\tread_and_replace_syscall((void *)&aarch64_prctl, 167, (void *)hook_aarch64_prctl, (void *)sys_call_table);'
-        if hook_reboot_str in after and 'aarch64_prctl, 167' not in after:
-            after = after.replace(hook_reboot_str, hook_prctl_str, 1)
+        # Replace syscall_table_ksud_hook_init to ONLY hook reboot and prctl (NO read or newfstat!)
+        clean_ksud_hook_init = '''static void syscall_table_ksud_hook_init(void)
+{
+	read_and_replace_syscall((void *)&aarch64_reboot, __AARCH64_reboot, (void *)hook_aarch64_reboot, (void *)sys_call_table);
+	read_and_replace_syscall((void *)&aarch64_prctl, 167, (void *)hook_aarch64_prctl, (void *)sys_call_table);
 
-        hook_reboot_compat = 'read_and_replace_syscall((void *)&armeabi_reboot, __ARMEABI_reboot, (void *)hook_armeabi_reboot, (void *)compat_sys_call_table);'
-        hook_prctl_compat = 'read_and_replace_syscall((void *)&armeabi_reboot, __ARMEABI_reboot, (void *)hook_armeabi_reboot, (void *)compat_sys_call_table);\n\tread_and_replace_syscall((void *)&armeabi_prctl, 172, (void *)hook_armeabi_prctl, (void *)compat_sys_call_table);'
-        if hook_reboot_compat in after and 'armeabi_prctl, 172' not in after:
-            after = after.replace(hook_reboot_compat, hook_prctl_compat, 1)
+#if defined(CONFIG_COMPAT)
+	read_and_replace_syscall((void *)&armeabi_reboot, __ARMEABI_reboot, (void *)hook_armeabi_reboot, (void *)compat_sys_call_table);
+	read_and_replace_syscall((void *)&armeabi_prctl, 172, (void *)hook_armeabi_prctl, (void *)compat_sys_call_table);
+#endif
+}
+
+static int ksu_syscall_table_restore(void *data)
+{
+	return 0;
+}
+'''
+        if 'static void syscall_table_ksud_hook_init()' in after:
+            s_idx = after.index('static void syscall_table_ksud_hook_init()')
+            e_idx = after.index('static __init int ksu_syscall_table_hook_init()', s_idx)
+            res_idx = after.find('static int ksu_syscall_table_restore(void *data)')
+            if res_idx != -1 and res_idx < s_idx:
+                after = after[:res_idx] + clean_ksud_hook_init + after[e_idx:]
+            else:
+                after = after[:s_idx] + clean_ksud_hook_init + after[e_idx:]
 
         sct_c.write_text(before + clean_419_block + "\n" + after, encoding="utf-8")
         print("[+] Replaced 4.19+ syscall handlers with dynamic KASLR in syscall_table_hook_arm64.c!")
@@ -1026,6 +1043,26 @@ if ksud_c.exists():
             ksud_text = ksud_text.replace("ksu_boot_completed = true;\n\nbail:", "ksu_boot_completed = true;\n\ttrack_throne(false);\n\nbail:", 1)
             print("[+] Added track_throne(false) to ksu_hook_watchdog in ksud.c!")
 
+        # Stub out ksu_handle_sys_read_fd to avoid read intercept freeze
+        read_stub = '''static noinline void ksu_handle_sys_read_fd(unsigned int fd)
+{
+	return;
+}
+void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr)
+{
+	return;
+}
+void ksu_handle_fstat64_ret(unsigned long *fd, struct stat64 __user **statbuf_ptr)
+{
+	return;
+}
+'''
+        if 'static noinline void ksu_handle_sys_read_fd' in ksud_text:
+            p1 = ksud_text.index('static noinline void ksu_handle_sys_read_fd')
+            p2 = ksud_text.index('void __init ksu_ksud_init()', p1) if 'void __init ksu_ksud_init()' in ksud_text else ksud_text.index('void ksu_ksud_init()', p1)
+            ksud_text = ksud_text[:p1] + read_stub + '\n' + ksud_text[p2:]
+            print('[+] Stubbed ksu_handle_sys_read_fd and ksu_handle_newfstat_ret in ksud.c!')
+
         ksud_c.write_text(ksud_text, encoding="utf-8")
         print("[+] Stubbed nuke_ext4_sysfs in ksud.c!")
 
@@ -1094,12 +1131,19 @@ if ksu_c.exists():
 #ifdef CONFIG_KSU_HACK_ARM64_BRANCH_LINK
 #undef CONFIG_KSU_HACK_ARM64_BRANCH_LINK
 #endif
+#ifdef CONFIG_KSU_LSM_SECURITY_HOOKS
+#undef CONFIG_KSU_LSM_SECURITY_HOOKS
+#endif
 """
     if "#ifndef CONFIG_KSU_TAMPER_SYSCALL_TABLE" not in kc_text:
         kc_text = enforce_tamper + kc_text
         print("[+] Enforced CONFIG_KSU_TAMPER_SYSCALL_TABLE in ksu.c!")
 
     # 13b. Remove branch_link definitions and include block
+    if "#define CONFIG_KSU_LSM_SECURITY_HOOKS 1" in kc_text:
+        kc_text = kc_text.replace("#define CONFIG_KSU_LSM_SECURITY_HOOKS 1", "// #define CONFIG_KSU_LSM_SECURITY_HOOKS 1")
+        print("[+] Commented out CONFIG_KSU_LSM_SECURITY_HOOKS 1 in ksu.c!")
+
     if "#define CONFIG_KSU_HACK_ARM64_BRANCH_LINK 1" in kc_text:
         kc_text = kc_text.replace("#define CONFIG_KSU_HACK_ARM64_BRANCH_LINK 1", "// #define CONFIG_KSU_HACK_ARM64_BRANCH_LINK 1")
         print("[+] Commented out CONFIG_KSU_HACK_ARM64_BRANCH_LINK 1 in ksu.c!")
@@ -1276,10 +1320,10 @@ use rustix::{cstr, runtime::execve};
 pub unsafe extern "C" fn main(_argc: i32, argv: *const *const u8, envp: *const *const u8) -> i32 {
     let _ = init::init();
     unsafe {
-        // Direct execution of real Android init binary
-        let _ = execve(cstr!("/system/bin/init"), argv, envp);
-        let _ = execve(cstr!("/init.real"), argv, envp);
+        // Execute /init (which symlinks to init.real) with fallback
         let _ = execve(cstr!("/init"), argv, envp);
+        let _ = execve(cstr!("/init.real"), argv, envp);
+        let _ = execve(cstr!("/system/bin/init"), argv, envp);
         loop {
             std::thread::sleep(std::time::Duration::from_secs(3600));
         }
@@ -1295,7 +1339,7 @@ if ksuinit_init.exists():
     old_unlink = 'unlink("/init")?;'
     new_unlink = 'let _ = unlink("/init");'
     old_symlink = 'symlink(real_init, "/init")?;'
-    new_symlink = 'let _ = symlink("/system/bin/init", "/init");'
+    new_symlink = 'let _ = symlink(real_init, "/init");'
     if old_unlink in ki_text:
         ki_text = ki_text.replace(old_unlink, new_unlink)
     if old_symlink in ki_text:
