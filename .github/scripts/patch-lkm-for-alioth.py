@@ -3,8 +3,8 @@
 Kernel: 4.19.325-Ikun-KirinNova
 Base address: 0xffffff8010080000
 Supports Dynamic KASLR Slide & Manager Signature Bypass
-Hooks: CONFIG_KSU_TAMPER_SYSCALL_TABLE + Safe LSM Hooks + sys_prctl hook
-Full support for KernelSU Manager v3.3.0-52 (32653)
+Hooks: CONFIG_KSU_TAMPER_SYSCALL_TABLE + Safe LSM Hooks
+Safe ARM64 address translation using kimage_voffset and memstart_addr
 """
 
 import os
@@ -90,9 +90,6 @@ static uintptr_t get_hardcoded_symbol(const char *name)
     if (!name) return 0;
     uintptr_t slide = get_kaslr_slide();
 
-    if (!strcmp(name, "_stext")) return 0xffffff8010080000UL + slide;
-    if (!strcmp(name, "_etext")) return 0xffffff8011c00000UL + slide;
-
     // Credentials & UID
     if (!strcmp(name, "commit_creds")) return 0xffffff80100ef930UL + slide;
     if (!strcmp(name, "init_cred")) return 0xffffff8012a2dd58UL + slide;
@@ -100,25 +97,27 @@ static uintptr_t get_hardcoded_symbol(const char *name)
     if (!strcmp(name, "__arm64_sys_setresuid")) return 0xffffff80100dc908UL + slide;
     if (!strcmp(name, "security_task_fix_setuid")) return 0xffffff801054aaa4UL + slide;
 
-    // Syscalls: reboot, prctl, execve
-    if (!strcmp(name, "__arm64_sys_reboot")) return 0xffffff80100f08dcUL + slide;
-    if (!strcmp(name, "__arm64_sys_prctl")) return 0xffffff80100def50UL + slide;
+    // Execve & hooks
+    if (!strcmp(name, "__do_execve_file")) return 0xffffff80102ee4e8UL + slide;
+    if (!strcmp(name, "exec_binprm")) return 0xffffff80102eefdcUL + slide;
+    if (!strcmp(name, "search_binary_handler")) return 0xffffff80102ee2f0UL + slide;
+    if (!strcmp(name, "security_bprm_check")) return 0xffffff8010548b04UL + slide;
     if (!strcmp(name, "__arm64_sys_execve")) return 0xffffff80102eea68UL + slide;
     if (!strcmp(name, "__arm64_sys_execveat")) return 0xffffff80102eeab8UL + slide;
     if (!strcmp(name, "__arm64_compat_sys_execve")) return 0xffffff80102eeb24UL + slide;
     if (!strcmp(name, "__arm64_compat_sys_execveat")) return 0xffffff80102eeb74UL + slide;
 
-    // Faccessat & Stat
+    // Faccessat
     if (!strcmp(name, "do_faccessat")) return 0xffffff80102dfa60UL + slide;
     if (!strcmp(name, "__arm64_sys_faccessat")) return 0xffffff80102dfcc4UL + slide;
+
+    // Stat, Read & Close
     if (!strcmp(name, "vfs_statx")) return 0xffffff80102eb048UL + slide;
     if (!strcmp(name, "__arm64_sys_newfstatat")) return 0xffffff80102eb2a0UL + slide;
     if (!strcmp(name, "__arm64_sys_newfstat")) return 0xffffff80102eb33cUL + slide;
     if (!strcmp(name, "__arm64_sys_fstatat64")) return 0xffffff80102eb650UL + slide;
     if (!strcmp(name, "__arm64_sys_fstat64")) return 0xffffff80102eb580UL + slide;
     if (!strcmp(name, "__arm64_compat_sys_newfstatat")) return 0xffffff80102eb8ccUL + slide;
-
-    // Read & Close
     if (!strcmp(name, "vfs_read")) return 0xffffff80102e1e84UL + slide;
     if (!strcmp(name, "ksys_read")) return 0xffffff80102e2484UL + slide;
     if (!strcmp(name, "__arm64_sys_read")) return 0xffffff80102e2550UL + slide;
@@ -128,8 +127,8 @@ static uintptr_t get_hardcoded_symbol(const char *name)
     // Syscalls for util.h
     if (!strcmp(name, "__arm64_sys_setns")) return 0xffffff80100ee0c0UL + slide;
     if (!strcmp(name, "__arm64_sys_unshare")) return 0xffffff80100c0058UL + slide;
-    if (!strcmp(name, "ksys_unshare")) return 0xffffff80100c0058UL + slide;
     if (!strcmp(name, "__arm64_sys_umount")) return 0xffffff80103104f0UL + slide;
+    if (!strcmp(name, "__arm64_sys_reboot")) return 0xffffff80100f08dcUL + slide;
     if (!strcmp(name, "__arm64_sys_init_module")) return 0xffffff80101906ecUL + slide;
     if (!strcmp(name, "__arm64_sys_finit_module")) return 0xffffff80101908a0UL + slide;
 
@@ -174,7 +173,7 @@ static uintptr_t get_hardcoded_symbol(const char *name)
         hdr_path.write_text(text, encoding="utf-8")
         print("[+] Patched kallsyms_common.h with dynamic KASLR symbols!")
     else:
-        start_fn = "#ifndef _stext" if "#ifndef _stext" in text else "static uintptr_t get_hardcoded_symbol(const char *name)"
+        start_fn = "static uintptr_t get_hardcoded_symbol(const char *name)"
         end_fn = "return 0;\n}\n"
         if start_fn in text and end_fn in text:
             idx1 = text.index(start_fn)
@@ -298,6 +297,7 @@ static noinline void read_and_replace_syscall(void *old_ptr, unsigned long sysca
 		return;
 
 	void **target_slot = (void **)((unsigned long)writable_addr + offset);
+
 	*(void **)old_ptr = *target_slot;
 	barrier();
 
@@ -312,7 +312,11 @@ static noinline void restore_syscall(void *old_ptr, unsigned long syscall_nr, vo
 	void **sctable = (void **)target_table;
 	void **syscall_slot_addr = &sctable[syscall_nr];
 
-	if (!*syscall_slot_addr || !*(void **)old_ptr)
+	if (!*syscall_slot_addr)
+		return;
+
+	long dummy = 0;
+	if (copy_from_kernel_nofault((void *)&dummy, *(void **)old_ptr, sizeof(long)))
 		return;
 
 	pr_info("%s: restore syscall #%d at 0x%lx\\n", __func__, (int)syscall_nr, (long)syscall_slot_addr);
@@ -342,7 +346,7 @@ static noinline void restore_syscall(void *old_ptr, unsigned long syscall_nr, vo
     vp_h.write_text(safe_vmap_patch, encoding="utf-8")
     print("[+] Injected safe ARM64 vmap_patch.h with kimage_voffset and pfn_valid checks!")
 
-# 4. Patch syscall_table_hook_arm64.c with dynamic KASLR slide, sys_prctl hook, and robust fallbacks
+# 4. Patch syscall_table_hook_arm64.c with dynamic KASLR slide and robust fallback
 sct_c = ksu_root / "kernel/hook/syscall_table_hook_arm64.c"
 if sct_c.exists():
     sct_text = sct_c.read_text(encoding="utf-8")
@@ -360,11 +364,6 @@ if sct_c.exists():
 #define sys_call_table ((syscall_fn_t *)(0xffffff8011a00880UL + get_kaslr_slide()))
 #define compat_sys_call_table ((const void **)(0xffffff8011a045f0UL + get_kaslr_slide()))
 
-extern int ksu_install_fd(void);
-extern void disable_seccomp(void);
-extern void ksu_set_manager_appid(uid_t appid);
-extern void escape_to_root_forced(void);
-
 static syscall_fn_t aarch64_reboot __read_mostly = nullptr; 
 asmlinkage long hook_aarch64_reboot(const struct pt_regs *regs)
 {
@@ -375,58 +374,6 @@ asmlinkage long hook_aarch64_reboot(const struct pt_regs *regs)
 
 	ksu_handle_sys_reboot(magic1, magic2, cmd, arg);
 	return aarch64_reboot ? aarch64_reboot(regs) : ((syscall_fn_t)(0xffffff80100f08dcUL + get_kaslr_slide()))(regs);
-}
-
-static syscall_fn_t aarch64_prctl __read_mostly = nullptr;
-asmlinkage long hook_aarch64_prctl(const struct pt_regs *regs)
-{
-	int option = (int)regs->regs[0];
-	if (option == (int)0xDEADBEEF) {
-		int cmd = (int)regs->regs[1];
-		void __user *arg3 = (void __user *)regs->regs[2];
-		void __user *arg4 = (void __user *)regs->regs[3];
-		void __user *arg5 = (void __user *)regs->regs[4];
-
-		pr_info("ksu: prctl 0xDEADBEEF cmd=%d from uid=%d\\n", cmd, current_uid().val);
-
-		// Crown caller as manager
-		ksu_set_manager_appid(current_uid().val % 100000);
-
-		// Install driver FD into current process
-		ksu_install_fd();
-
-		// Disable seccomp and mark managed
-		disable_seccomp();
-		set_thread_flag(TIF_KSU_MANAGED);
-
-		if (cmd == 2) { // CMD_GET_VERSION
-			int version = 32653;
-			int flags = (1U << 1); // KSU_GET_INFO_FLAG_MANAGER
-#ifdef MODULE
-			flags |= (1U << 0); // KSU_GET_INFO_FLAG_LKM
-#endif
-			int result = 0;
-			if (arg3 && copy_to_user(arg3, &version, sizeof(version))) return -EFAULT;
-			if (arg4 && copy_to_user(arg4, &flags, sizeof(flags))) return -EFAULT;
-			if (arg5 && copy_to_user(arg5, &result, sizeof(result))) return -EFAULT;
-			return 0;
-		}
-
-		if (cmd == 1) { // CMD_BECOME_MANAGER
-			int result = 0;
-			if (arg3 && copy_to_user(arg3, &result, sizeof(result))) return -EFAULT;
-			return 0;
-		}
-
-		if (cmd == 0) { // CMD_GRANT_ROOT
-			escape_to_root_forced();
-			return 0;
-		}
-
-		return 0;
-	}
-
-	return aarch64_prctl ? aarch64_prctl(regs) : ((syscall_fn_t)(0xffffff80100def50UL + get_kaslr_slide()))(regs);
 }
 
 static syscall_fn_t aarch64_execve __read_mostly = nullptr;
@@ -569,36 +516,12 @@ asmlinkage long hook_armeabi_reboot(const struct pt_regs *regs)
 	ksu_handle_sys_reboot(magic1, magic2, cmd, arg);
 	return armeabi_reboot ? armeabi_reboot(regs) : ((syscall_fn_t)(0xffffff80100f08dcUL + get_kaslr_slide()))(regs);
 }
-
-static syscall_fn_t armeabi_prctl __read_mostly = nullptr;
-asmlinkage long hook_armeabi_prctl(const struct pt_regs *regs)
-{
-	int option = (int)regs->regs[0];
-	if (option == (int)0xDEADBEEF) {
-		return hook_aarch64_prctl(regs);
-	}
-	return armeabi_prctl ? armeabi_prctl(regs) : ((syscall_fn_t)(0xffffff80100def50UL + get_kaslr_slide()))(regs);
-}
 """
         sct_c.write_text(before + clean_419_block + "\n" + after, encoding="utf-8")
-        print("[+] Replaced 4.19+ syscall handlers with dynamic KASLR & prctl in syscall_table_hook_arm64.c!")
+        print("[+] Replaced 4.19+ syscall handlers with dynamic KASLR in syscall_table_hook_arm64.c!")
 
-    # Now hook prctl in syscall_table_ksud_hook_init
-    sct_text2 = sct_c.read_text(encoding="utf-8")
-    if "read_and_replace_syscall((void *)&aarch64_prctl, 167" not in sct_text2:
-        old_hook_init = 'read_and_replace_syscall((void *)&aarch64_reboot, __AARCH64_reboot, (void *)hook_aarch64_reboot, (void *)sys_call_table);'
-        new_hook_init = """read_and_replace_syscall((void *)&aarch64_reboot, __AARCH64_reboot, (void *)hook_aarch64_reboot, (void *)sys_call_table);
-	read_and_replace_syscall((void *)&aarch64_prctl, 167, (void *)hook_aarch64_prctl, (void *)sys_call_table);"""
-        sct_text2 = sct_text2.replace(old_hook_init, new_hook_init, 1)
 
-        old_compat_init = 'read_and_replace_syscall((void *)&armeabi_reboot, __ARMEABI_reboot, (void *)hook_armeabi_reboot, (void *)compat_sys_call_table);'
-        new_compat_init = """read_and_replace_syscall((void *)&armeabi_reboot, __ARMEABI_reboot, (void *)hook_armeabi_reboot, (void *)compat_sys_call_table);
-	read_and_replace_syscall((void *)&armeabi_prctl, 172, (void *)hook_armeabi_prctl, (void *)compat_sys_call_table);"""
-        sct_text2 = sct_text2.replace(old_compat_init, new_compat_init, 1)
-        sct_c.write_text(sct_text2, encoding="utf-8")
-        print("[+] Hooked __arm64_sys_prctl (#167 / #172) in syscall_table_hook_arm64.c!")
-
-# 5. Patch util.h for ksyscall dispatch with dynamic KASLR slide and unshare definition
+# 5. Patch util.h for ksyscall dispatch with dynamic KASLR slide
 ut_h = ksu_root / "kernel/include/util.h"
 if ut_h.exists():
     ut_text = ut_h.read_text(encoding="utf-8")
@@ -621,11 +544,7 @@ if ut_h.exists():
 	for (size_t __i = 0; __i < __ksu_nargs && __i < 6; __i++)	\\
 		__ksu_regs.regs[__i] = __ksu_args[__i + 1];		\\
 	__ksu_dispatch_sys(#name, &__ksu_regs);				\\
-})
-
-#undef ksys_unshare
-#define ksys_unshare(flags) ({ ksyscall(unshare, flags); })
-"""
+})"""
     old_marker = "#define ksyscall(name, ...)"
     if "__ksu_dispatch_sys" not in ut_text and old_marker in ut_text:
         idx = ut_text.index(old_marker)
@@ -635,18 +554,17 @@ if ut_h.exists():
         print("[+] Patched util.h for dynamic KASLR syscall dispatch!")
     elif "__ksu_dispatch_sys" in ut_text:
         idx1 = ut_text.index("static inline long __ksu_dispatch_sys")
-        marker_end = "__ksu_dispatch_sys(#name, &__ksu_regs);				\\\n})"
-        if marker_end in ut_text:
-            idx2 = ut_text.index(marker_end) + len(marker_end)
-            ut_text = ut_text[:idx1] + new_ksyscall + ut_text[idx2:]
-            ut_h.write_text(ut_text, encoding="utf-8")
-            print("[+] Updated util.h with dynamic KASLR slide and ksys_unshare!")
+        idx2 = ut_text.index("__ksu_dispatch_sys(#name, &__ksu_regs);				\\\n})") + len("__ksu_dispatch_sys(#name, &__ksu_regs);				\\\n})")
+        ut_text = ut_text[:idx1] + new_ksyscall + ut_text[idx2:]
+        ut_h.write_text(ut_text, encoding="utf-8")
+        print("[+] Updated util.h with dynamic KASLR slide!")
 
 # 6. Patch lsm_hooks_list.c to define exact hook heads and prevent NULL-dereference
 lsm_h = ksu_root / "kernel/hook/lsm_hooks_list.c"
 if lsm_h.exists():
     lsm_text = lsm_h.read_text(encoding="utf-8")
     
+    # 6a. Exact hook head helper
     hook_helper = """static inline void *get_exact_hook_head(const char *name)
 {
 	uintptr_t slide = get_kaslr_slide();
@@ -664,6 +582,7 @@ if lsm_h.exists():
     if "get_exact_hook_head" not in lsm_text:
         lsm_text = hook_helper + "\n" + lsm_text
 
+    # 6b. Safe hook head in LSM_HACK_INIT
     shh_decl = "extern struct security_hook_heads security_hook_heads;"
     shh_def = """static inline struct security_hook_heads *get_security_hook_heads(void)
 {
@@ -675,6 +594,7 @@ if lsm_h.exists():
         lsm_text = lsm_text.replace(shh_decl, shh_def, 1)
         lsm_text = lsm_text.replace(shh_decl, "")
 
+    # 6c. Guard against NULL node in ksu_hack_lsm_slot
     null_node_check = """	uintptr_t node = *(uintptr_t *)hook_head;
 	if (!node) {
 		pr_info("LSM: No node on hook head for %s\\n", hook_name);
@@ -685,72 +605,38 @@ if lsm_h.exists():
 	uintptr_t hook_slot_addr = node + 3 * sizeof(uintptr_t);"""
     if old_node_fetch in lsm_text:
         lsm_text = lsm_text.replace(old_node_fetch, null_node_check, 1)
+        print("[+] Added NULL node check in ksu_hack_lsm_slot!")
 
+    # 6d. Update LSM_HACK_INIT to try exact hook head first
     old_lsm_init = "void *hook_head = (void *)&security_hook_heads.hook_name;"
     new_lsm_init = "void *hook_head = get_exact_hook_head(#hook_name); if (!hook_head) hook_head = (void *)&security_hook_heads.hook_name;"
     if old_lsm_init in lsm_text:
         lsm_text = lsm_text.replace(old_lsm_init, new_lsm_init)
+        print("[+] Updated LSM_HACK_INIT to use get_exact_hook_head()!")
 
     lsm_h.write_text(lsm_text, encoding="utf-8")
     print("[+] Patched lsm_hooks_list.c for crash-free LSM hooking!")
 
-# 7. Robust manager APK identification and parsing in apk_sign.c & throne_tracker.c
+# 6e. Patch setuid_hook.c to instantly crown manager and install driver fd via current->comm
+su_c = ksu_root / "kernel/hook/setuid_hook.c"
+if su_c.exists():
+    su_text = su_c.read_text(encoding="utf-8")
+    marker_uid = "if (unlikely(is_uid_manager(new_uid)))"
+    comm_check = """	if (unlikely(strstr(current->comm, "weishu") || strstr(current->comm, "kernelsu") || strstr(current->comm, "resukisu"))) {
+		ksu_set_manager_appid(new_uid % KSU_PER_USER_RANGE);
+		goto install_ksu_fd;
+	}
+
+	if (unlikely(is_uid_manager(new_uid)))"""
+    if marker_uid in su_text and "strstr(current->comm" not in su_text:
+        su_text = su_text.replace(marker_uid, comm_check, 1)
+        su_c.write_text(su_text, encoding="utf-8")
+        print("[+] Patched setuid_hook.c for instant manager crowning and ksu_driver install!")
+
+# 7. Bypass manager APK signature verification in apk_sign.c
 apk_c = ksu_root / "kernel/manager/apk_sign.c"
 if apk_c.exists():
     apk_text = apk_c.read_text(encoding="utf-8")
-    
-    # 7a. Robust get_pkg_from_apk_path that handles paths without hyphens
-    old_get_pkg_start = "int get_pkg_from_apk_path(char *pkg, const char *path)\n{"
-    if old_get_pkg_start in apk_text:
-        idx = apk_text.index(old_get_pkg_start)
-        brace_count = 0
-        end_idx = idx + len(old_get_pkg_start)
-        for i in range(idx + len(old_get_pkg_start) - 1, len(apk_text)):
-            if apk_text[i] == '{':
-                brace_count += 1
-            elif apk_text[i] == '}':
-                brace_count -= 1
-                if brace_count == 0:
-                    end_idx = i + 1
-                    break
-        robust_get_pkg = """int get_pkg_from_apk_path(char *pkg, const char *path)
-{
-	int len = strlen(path);
-	if (len < 1)
-		return -1;
-
-	const char *last_slash = strrchr(path, '/');
-	if (!last_slash)
-		return -1;
-
-	const char *second_last_slash = NULL;
-	for (const char *p = last_slash - 1; p >= path; p--) {
-		if (*p == '/') {
-			second_last_slash = p;
-			break;
-		}
-	}
-	if (!second_last_slash)
-		return -1;
-
-	const char *start = second_last_slash + 1;
-	const char *end = last_slash;
-	const char *hyphen = strchr(start, '-');
-	if (hyphen && hyphen < end) {
-		end = hyphen;
-	}
-
-	int pkg_len = end - start;
-	if (pkg_len <= 0 || pkg_len >= KSU_MAX_PACKAGE_NAME)
-		return -1;
-
-	memcpy(pkg, start, pkg_len);
-	pkg[pkg_len] = '\\0';
-	return 0;
-}"""
-        apk_text = apk_text[:idx] + robust_get_pkg + apk_text[end_idx:]
-
-    # 7b. Universal is_manager_apk
     fn_start = "bool is_manager_apk(char *path)\n{"
     if fn_start in apk_text:
         idx = apk_text.index(fn_start)
@@ -777,62 +663,48 @@ if apk_c.exists():
 		pr_info("ksu: recognized manager path: %s\\n", path);
 		return true;
 	}
-	if (check_v2_signature(path, 0x363, "4359c171f32543394cbc23ef908c4bb94cad7c8087002ba164c8230948c21549"))
-		return true;
-	if (check_v2_signature(path, EXPECTED_SIZE, EXPECTED_HASH))
-		return true;
 	return false;
 }"""
         apk_text = apk_text[:idx] + bypass_fn + apk_text[end_idx:]
-    apk_c.write_text(apk_text, encoding="utf-8")
-    print("[+] Patched apk_sign.c for robust package name and signature verification!")
+        apk_c.write_text(apk_text, encoding="utf-8")
+        print("[+] Configured smart manager identification in apk_sign.c!")
 
-# 7c. Patch throne_tracker.c to check uid_list directly
+# 7b. Patch throne_tracker.c to auto-start background thread on boot and crown manager directly from packages.list
 tt_c = ksu_root / "kernel/manager/throne_tracker.c"
 if tt_c.exists():
     tt_text = tt_c.read_text(encoding="utf-8")
-    old_crown = """static void crown_manager(const char *apk, struct list_head *uid_data)
-{"""
-    if old_crown in tt_text:
-        idx = tt_text.index(old_crown)
-        brace_count = 0
-        end_idx = idx + len(old_crown)
-        for i in range(idx + len(old_crown) - 1, len(tt_text)):
-            if tt_text[i] == '{':
-                brace_count += 1
-            elif tt_text[i] == '}':
-                brace_count -= 1
-                if brace_count == 0:
-                    end_idx = i + 1
-                    break
-        new_crown = """static void crown_manager(const char *apk, struct list_head *uid_data)
+    
+    # 1. Start throne tracker background thread in ksu_throne_tracker_init
+    old_init = "void ksu_throne_tracker_init()\n{\n\t// nothing to do\n}"
+    boot_thread_init = """static int ksu_boot_tracker_thread(void *data)
 {
-	char pkg[KSU_MAX_PACKAGE_NAME];
-	if (get_pkg_from_apk_path(pkg, apk) < 0) {
-		pr_err("Failed to get package name from apk path: %s\\n", apk);
-		return;
-	}
-
-	pr_info("manager pkg: %s\\n", pkg);
-
-	struct list_head *list = (struct list_head *)uid_data;
-	struct uid_data *np;
-
-	list_for_each_entry (np, list, list) {
-		if (strncmp(np->package, pkg, KSU_MAX_PACKAGE_NAME) == 0 ||
-		    strstr(np->package, "kernelsu") ||
-		    strstr(np->package, "ksu") ||
-		    strstr(np->package, "sukisu") ||
-		    strstr(np->package, "resukisu")) {
-			pr_info("Crowning manager: %s(uid=%d)\\n", np->package, np->uid);
-			ksu_set_manager_appid(np->uid);
-			break;
+	int count = 0;
+	pr_info("ksu: boot_tracker_thread started\\n");
+	while (count < 300) {
+		msleep(200);
+		count++;
+		if (is_file_existing(SYSTEM_PACKAGES_LIST_PATH)) {
+			pr_info("ksu: packages.list ready, tracking throne (attempt %d)\\n", count);
+			msleep(300);
+			escape_to_root_forced();
+			throne_tracker_fn(false);
+			if (ksu_is_manager_appid_valid()) {
+				pr_info("ksu: manager crowned successfully on boot: uid %d\\n", ksu_get_manager_appid());
+				break;
+			}
 		}
 	}
+	return 0;
+}
+
+void ksu_throne_tracker_init()
+{
+	kthread_run(ksu_boot_tracker_thread, NULL, "ksu_throne");
 }"""
-        tt_text = tt_text[:idx] + new_crown + tt_text[end_idx:]
-    
-    # In throne_tracker_fn, check uid_list directly before disk search
+    if old_init in tt_text:
+        tt_text = tt_text.replace(old_init, boot_thread_init, 1)
+
+    # 2. In throne_tracker_fn, check uid_list directly from packages.list
     marker_prune = "if (prune_only)\n\t\tgoto prune;"
     new_direct_check = """if (prune_only)
 		goto prune;
@@ -843,18 +715,19 @@ if tt_c.exists():
 		    strstr(np->package, "io.github.a13e300.ksu") ||
 		    strstr(np->package, "org.resukisu") ||
 		    strstr(np->package, "kernelsu")) {
-			pr_info("throne_tracker_fn: found manager %s (uid=%d) directly in packages.list!\\n", np->package, np->uid);
+			pr_info("throne_tracker_fn: crowning %s (uid=%d) directly from packages.list!\\n", np->package, np->uid);
 			ksu_set_manager_appid(np->uid);
+			manager_exist = true;
 			goto prune;
 		}
 	}"""
-    if marker_prune in tt_text and "throne_tracker_fn: found manager" not in tt_text:
+    if marker_prune in tt_text and "throne_tracker_fn: crowning" not in tt_text:
         tt_text = tt_text.replace(marker_prune, new_direct_check, 1)
 
     tt_c.write_text(tt_text, encoding="utf-8")
-    print("[+] Patched throne_tracker.c for fast direct manager crowning!")
+    print("[+] Patched throne_tracker.c for boot autostart and direct manager recognition!")
 
-# 8. Patch supercall/dispatch.c: fix find_task_by_vpid, tasklist_lock, auto-crown manager in do_get_info
+# 8. Patch supercall/dispatch.c: fix find_task_by_vpid, tasklist_lock, change_pid
 disp_c = ksu_root / "kernel/supercall/dispatch.c"
 if disp_c.exists():
     disp_text = disp_c.read_text(encoding="utf-8")
@@ -865,6 +738,7 @@ if disp_c.exists():
 	extern struct task_struct *pid_task(struct pid *pid, enum pid_type type);
 	task = pid_task(find_vpid(pid), PIDTYPE_PID);"""
         disp_text = disp_text.replace("task = find_task_by_vpid(pid);", new_find_task, 1)
+        print("[+] Replaced find_task_by_vpid with exported pid_task(find_vpid) in dispatch.c!")
     
     # 8b. Stub do_set_init_pgrp to eliminate tasklist_lock, change_pid, init_task
     set_pgrp_start = "static int do_set_init_pgrp(void __user *arg)\n{"
@@ -885,8 +759,9 @@ if disp_c.exists():
 	return 0;
 }"""
         disp_text = disp_text[:idx] + stub_pgrp + disp_text[end_idx:]
+        print("[+] Stubbed do_set_init_pgrp in dispatch.c!")
 
-    # 8c. Auto-crown manager in do_get_info and do_get_info_legacy
+    # 8c. Auto-crown manager in do_get_info
     get_info_start = "static int do_get_info(void __user *arg)\n{"
     if get_info_start in disp_text:
         idx = disp_text.index(get_info_start)
@@ -919,12 +794,6 @@ if disp_c.exists():
 	cmd.uapi_version = KERNEL_SU_UAPI_VERSION;
 	cmd.version = 32653;
 
-	if (ksuver_override)
-		cmd.version = ksuver_override;
-
-	if (ksuflags_override)
-		cmd.flags = ksuflags_override;
-
 	if (copy_to_user(arg, &cmd, sizeof(cmd))) {
 		pr_err("get_version: copy_to_user failed\\n");
 		return -EFAULT;
@@ -933,185 +802,8 @@ if disp_c.exists():
 	return 0;
 }"""
         disp_text = disp_text[:idx] + new_do_get_info + disp_text[end_idx:]
-
-    get_info_leg_start = "static int do_get_info_legacy(void __user *arg)\n{"
-    if get_info_leg_start in disp_text:
-        idx = disp_text.index(get_info_leg_start)
-        brace_count = 0
-        end_idx = idx + len(get_info_leg_start)
-        for i in range(idx + len(get_info_leg_start) - 1, len(disp_text)):
-            if disp_text[i] == '{':
-                brace_count += 1
-            elif disp_text[i] == '}':
-                brace_count -= 1
-                if brace_count == 0:
-                    end_idx = i + 1
-                    break
-        new_do_get_info_leg = """static int do_get_info_legacy(void __user *arg)
-{
-	struct ksu_get_info_legacy_cmd cmd = { .version = 32653, .flags = 0 };
-
-	if (!ksu_is_manager_appid_valid()) {
-		ksu_set_manager_appid(current_uid().val % KSU_PER_USER_RANGE);
-	}
-
-	if (is_manager()) {
-		cmd.flags |= KSU_GET_INFO_FLAG_MANAGER;
-	}
-	cmd.features = KSU_FEATURE_MAX;
-	cmd.version = 32653;
-
-	if (copy_to_user(arg, &cmd, sizeof(cmd))) {
-		pr_err("get_version: copy_to_user failed\\n");
-		return -EFAULT;
-	}
-
-	return 0;
-}"""
-        disp_text = disp_text[:idx] + new_do_get_info_leg + disp_text[end_idx:]
-
-    # 8d. Auto-crown caller in only_manager and manager_or_root
-    old_only_mgr = "static inline bool only_manager(void)\n{\n\treturn is_manager();\n}"
-    new_only_mgr = """static inline bool only_manager(void)
-{
-	if (!ksu_is_manager_appid_valid()) {
-		ksu_set_manager_appid(current_uid().val % KSU_PER_USER_RANGE);
-		return true;
-	}
-	return is_manager();
-}"""
-    if old_only_mgr in disp_text:
-        disp_text = disp_text.replace(old_only_mgr, new_only_mgr, 1)
-
-    old_mgr_root = "static inline bool manager_or_root(void)\n{\n\treturn is_manager() || current_uid().val == 0;\n}"
-    new_mgr_root = """static inline bool manager_or_root(void)
-{
-	if (current_uid().val == 0) return true;
-	if (!ksu_is_manager_appid_valid()) {
-		ksu_set_manager_appid(current_uid().val % KSU_PER_USER_RANGE);
-		return true;
-	}
-	return is_manager();
-}"""
-    if old_mgr_root in disp_text:
-        disp_text = disp_text.replace(old_mgr_root, new_mgr_root, 1)
-
+        print("[+] Patched do_get_info in dispatch.c!")
     disp_c.write_text(disp_text, encoding="utf-8")
-    print("[+] Patched dispatch.c for auto-manager recognition and version 32653!")
-
-# 8e. Patch hook/setuid_hook.c to auto-detect manager from packages.list on process fork
-setuid_c = ksu_root / "kernel/hook/setuid_hook.c"
-if setuid_c.exists():
-    safe_setuid_hook = """static void ksu_check_packages_list_for_manager(void)
-{
-	struct file *fp = filp_open("/data/system/packages.list", O_RDONLY, 0);
-	if (IS_ERR(fp))
-		return;
-
-	char *buf = kmalloc(4096, GFP_KERNEL);
-	if (!buf) {
-		filp_close(fp, NULL);
-		return;
-	}
-
-	loff_t pos = 0;
-	ssize_t nread;
-	while ((nread = kernel_read(fp, buf, 4095, &pos)) > 0) {
-		buf[nread] = '\\0';
-		char *p = buf;
-		while (p && *p) {
-			char *line = strsep(&p, "\\n");
-			if (!line || !*line) continue;
-			if (strstr(line, "me.weishu.kernelsu") ||
-			    strstr(line, "io.github.a13e300.ksu") ||
-			    strstr(line, "org.resukisu")) {
-				char *tmp = line;
-				char *pkg = strsep(&tmp, " ");
-				char *uid_str = strsep(&tmp, " ");
-				if (pkg && uid_str) {
-					u32 uid = 0;
-					if (kstrtou32(uid_str, 10, &uid) == 0) {
-						ksu_set_manager_appid(uid);
-						pr_info("ksu: auto-detected manager %s -> uid %u\\n", pkg, uid);
-						kfree(buf);
-						filp_close(fp, NULL);
-						return;
-					}
-				}
-			}
-		}
-	}
-
-	kfree(buf);
-	filp_close(fp, NULL);
-}
-
-static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const struct cred *old)
-{
-	if (!new || !old)
-		return;
-
-	uid_t new_uid = ksu_get_uid_t(new->uid);
-	uid_t old_uid = ksu_get_uid_t(old->uid);
-
-	// old process is not root, ignore it.
-	if (unlikely(!!old_uid))
-		return;
-
-	if (unlikely(!ksu_is_manager_appid_valid())) {
-		ksu_check_packages_list_for_manager();
-	}
-
-	if (unlikely(is_uid_manager(new_uid)))
-		goto install_ksu_fd;
-
-	if (ksu_is_allow_uid_for_current(new_uid))
-		goto kill_seccomp;
-
-	// Handle kernel umount
-	ksu_handle_umount(new, old);
-	return;
-
-install_ksu_fd:
-	pr_info("install fd for manager: %d\\n", new_uid);
-	ksu_install_fd();
-
-kill_seccomp:
-	disable_seccomp();
-	set_thread_flag(TIF_KSU_MANAGED);
-	return;
-}
-"""
-    setuid_c.write_text(safe_setuid_hook, encoding="utf-8")
-    print("[+] Patched hook/setuid_hook.c for automatic manager package detection on setresuid!")
-
-# 8f. Patch feature/kernel_umount.c to remove unexported path_umount
-ku_c = ksu_root / "kernel/feature/kernel_umount.c"
-if ku_c.exists():
-    ku_text = ku_c.read_text(encoding="utf-8")
-    old_umount_mnt = "static __nocfi inline void ksu_umount_mnt(const char *mnt, struct path *path, int flags)\n{"
-    if old_umount_mnt in ku_text:
-        idx = ku_text.index(old_umount_mnt)
-        brace_count = 0
-        end_idx = idx + len(old_umount_mnt)
-        for i in range(idx + len(old_umount_mnt) - 1, len(ku_text)):
-            if ku_text[i] == '{':
-                brace_count += 1
-            elif ku_text[i] == '}':
-                brace_count -= 1
-                if brace_count == 0:
-                    end_idx = i + 1
-                    break
-        safe_umount_mnt = """static __nocfi inline void ksu_umount_mnt(const char *mnt, struct path *path, int flags)
-{
-	mm_segment_t old_fs = get_fs();
-	set_fs(KERNEL_DS);
-	(void)ksyscall(umount, (char __user *)mnt, flags);
-	set_fs(old_fs);
-}"""
-        ku_text = ku_text[:idx] + safe_umount_mnt + ku_text[end_idx:]
-        ku_c.write_text(ku_text, encoding="utf-8")
-        print("[+] Replaced path_umount with direct ksyscall(umount) in kernel_umount.c!")
 
 # 9. Patch app_profile.c: remove unexported alloc_uid and free_uid
 app_c = ksu_root / "kernel/policy/app_profile.c"
@@ -1190,11 +882,12 @@ if shide_c.exists():
         shide_c.write_text(shide_text, encoding="utf-8")
         print("[+] Stubbed ksu_prepare_fake_status_page in selinux_hide.c!")
 
-# 13. Patch ksu.c: enforce CONFIG_KSU_TAMPER_SYSCALL_TABLE, guard branch_insn.h, set allow_shell=true
+# 13. Patch ksu.c: enforce CONFIG_KSU_TAMPER_SYSCALL_TABLE and disable dangerous blacklist / kobject_del
 ksu_c = ksu_root / "kernel/ksu.c"
 if ksu_c.exists():
     kc_text = ksu_c.read_text(encoding="utf-8")
 
+    # 13a. Force disable branch link hack and enable tamper syscall table
     enforce_tamper = """#ifndef CONFIG_KSU_TAMPER_SYSCALL_TABLE
 #define CONFIG_KSU_TAMPER_SYSCALL_TABLE 1
 #endif
@@ -1204,16 +897,12 @@ if ksu_c.exists():
 """
     if "#ifndef CONFIG_KSU_TAMPER_SYSCALL_TABLE" not in kc_text:
         kc_text = enforce_tamper + kc_text
+        print("[+] Enforced CONFIG_KSU_TAMPER_SYSCALL_TABLE in ksu.c!")
 
-    if '#include "downstream/arm64_branch_insn.h"' in kc_text:
-        kc_text = kc_text.replace('#include "downstream/arm64_branch_insn.h"', '/* arm64_branch_insn.h disabled */')
-
-    if "static bool allow_shell = false;" in kc_text:
-        kc_text = kc_text.replace("static bool allow_shell = false;", "static bool allow_shell = true;")
-        print("[+] Set static bool allow_shell = true by default in ksu.c!")
-
+    # 13b. Remove branch_link definitions and include block
     if "#define CONFIG_KSU_HACK_ARM64_BRANCH_LINK 1" in kc_text:
         kc_text = kc_text.replace("#define CONFIG_KSU_HACK_ARM64_BRANCH_LINK 1", "// #define CONFIG_KSU_HACK_ARM64_BRANCH_LINK 1")
+        print("[+] Commented out CONFIG_KSU_HACK_ARM64_BRANCH_LINK 1 in ksu.c!")
 
     branch_include_block = """#ifdef CONFIG_KSU_HACK_ARM64_BRANCH_LINK
 #undef syscall_table_sucompat_enable
@@ -1223,24 +912,29 @@ if ksu_c.exists():
 #endif"""
     if branch_include_block in kc_text:
         kc_text = kc_text.replace(branch_include_block, "/* branch_link disabled */")
+        print("[+] Removed CONFIG_KSU_HACK_ARM64_BRANCH_LINK include block in ksu.c!")
 
     if "ksu_branch_link_patch_init();" in kc_text:
         kc_text = kc_text.replace("ksu_branch_link_patch_init();", "// ksu_branch_link_patch_init();")
+        print("[+] Disabled ksu_branch_link_patch_init() in ksu.c!")
 
+    # 13c. Disable ksu_extend_module_blacklist() and kobject_del in kernelsu_lkm_init
     if "ksu_extend_module_blacklist();" in kc_text:
         kc_text = kc_text.replace("ksu_extend_module_blacklist();", "// ksu_extend_module_blacklist();")
-
+        print("[+] Disabled dangerous ksu_extend_module_blacklist() in ksu.c!")
     if "kobject_del(&THIS_MODULE->mkobj.kobj);" in kc_text:
         kc_text = kc_text.replace("kobject_del(&THIS_MODULE->mkobj.kobj);", "// kobject_del(&THIS_MODULE->mkobj.kobj);")
+        print("[+] Disabled dangerous kobject_del() in ksu.c!")
 
     ksu_c.write_text(kc_text, encoding="utf-8")
-    print("[+] Patched ksu.c for tamper syscall table and disabled dangerous hooks!")
 
-# 14. Patch ksuinit for 100% guaranteed module loading
+
+# 14. Patch ksuinit
 ksuinit_lib = ksu_root / "userspace/ksuinit/src/lib.rs"
 if ksuinit_lib.exists():
     kl_text = ksuinit_lib.read_text(encoding="utf-8")
     
+    # 14a. Safe Kptr
     old_kptr_block = """impl Kptr {
     pub fn new() -> Result<Self> {
         let value = fs::read_to_string("/proc/sys/kernel/kptr_restrict")?;
@@ -1258,9 +952,12 @@ if ksuinit_lib.exists():
     if old_kptr_block in kl_text:
         kl_text = kl_text.replace(old_kptr_block, new_kptr_block, 1)
 
+    # 14b. Change map_while to filter_map in kernel_symbols_iter to prevent premature stop
     if ".map_while(|line| {" in kl_text:
         kl_text = kl_text.replace(".map_while(|line| {", ".filter_map(|line| {", 1)
+        print("[+] Changed map_while to filter_map in ksuinit lib.rs!")
 
+    # 14c. Dynamic KASLR fallback table in ksuinit
     new_load_mod = """    let mut kaslr_slide: u64 = 0;
     if !unresolved_symbols.is_empty() {
         let _ = for_each_kernel_symbols(|(symbol, addr)| {
@@ -1284,11 +981,10 @@ if ksuinit_lib.exists():
         });
     }
 
-    let hardcoded_bases: [(&str, u64); 30] = [
+    let hardcoded_bases: [(&str, u64); 27] = [
         ("sys_call_table", 0xffffff8011a00880),
         ("compat_sys_call_table", 0xffffff8011a045f0),
         ("__arm64_sys_reboot", 0xffffff80100f08dc),
-        ("__arm64_sys_prctl", 0xffffff80100def50),
         ("__arm64_sys_execve", 0xffffff80102eea68),
         ("__arm64_sys_execveat", 0xffffff80102eeab8),
         ("__arm64_sys_faccessat", 0xffffff80102dfcc4),
@@ -1313,8 +1009,6 @@ if ksuinit_lib.exists():
         ("module_blacklist", 0xffffff8012dc54e8),
         ("security_hook_heads", 0xffffff8012688a08),
         ("task_fix_setuid", 0xffffff8012688cf0),
-        ("_stext", 0xffffff8010080000),
-        ("_etext", 0xffffff8011c00000),
     ];
     for (name, base_addr) in hardcoded_bases {
         if let Some((mut sym, offset)) = unresolved_symbols.remove(name) {
@@ -1325,12 +1019,8 @@ if ksuinit_lib.exists():
         }
     }
 
-    // Convert any remaining unexported symbols to SHN_ABS with 0 to prevent kernel linker abort
-    for (name, (mut sym, offset)) in unresolved_symbols.drain() {
-        sym.st_shndx = section_header::SHN_ABS as usize;
-        sym.st_value = 0;
-        let _ = buffer.pwrite_with(sym, offset, ctx);
-        log::warn!("Stubbed remaining symbol {} as SHN_ABS to prevent init_module rejection", name);
+    for name in unresolved_symbols.keys() {
+        log::warn!("Cannot find symbol: {}", name);
     }"""
 
     if "for_each_kernel_symbols" in kl_text:
@@ -1341,7 +1031,7 @@ if ksuinit_lib.exists():
         idx_e = kl_text.index("let mut kmsg = match open_kmsg_at_end()")
         kl_text = kl_text[:idx_s] + new_load_mod.strip() + "\n\n    " + kl_text[idx_e:]
         ksuinit_lib.write_text(kl_text, encoding="utf-8")
-        print("[+] Patched ksuinit with guaranteed module symbol resolution and SHN_ABS stubbing!")
+        print("[+] Patched ksuinit with dynamic KASLR relocation & hardcoded symbol fallback!")
 
 # 15. Patch ksuinit main.rs and init.rs for safe direct init execution
 ksuinit_main = ksu_root / "userspace/ksuinit/src/main.rs"
@@ -1383,7 +1073,7 @@ if ksuinit_init.exists():
     ksuinit_init.write_text(ki_text, encoding="utf-8")
     print("[+] Made unlink and symlink non-fatal in ksuinit init.rs!")
 
-# 16. Patch Makefile: obj-m, KSU_VERSION=32653, EXPECTED_SIZE and EXPECTED_HASH
+# 16. Patch Makefile: obj-m := ksu.o and CONFIG_KSU_TAMPER_SYSCALL_TABLE and KSU 32653 certs
 mk_path = ksu_root / "kernel/Makefile"
 if mk_path.exists():
     mk_text = mk_path.read_text(encoding="utf-8")
@@ -1393,18 +1083,16 @@ if mk_path.exists():
             "obj-$(CONFIG_KSU) := ksu.o\nobj-m := ksu.o\nCFLAGS_ksu.o += -DCONFIG_KSU_TAMPER_SYSCALL_TABLE=1\n",
             1
         )
-    import re
-    if "-DKSU_VERSION=" in mk_text:
-        mk_text = re.sub(r'-DKSU_VERSION=\d+', '-DKSU_VERSION=32653', mk_text)
-    else:
-        mk_text = "CFLAGS_ksu.o += -DKSU_VERSION=32653\n" + mk_text
+    elif "CONFIG_KSU_HACK_ARM64_BRANCH_LINK" in mk_text:
+        mk_text = mk_text.replace("CONFIG_KSU_HACK_ARM64_BRANCH_LINK=1", "CONFIG_KSU_TAMPER_SYSCALL_TABLE=1")
 
-    # Align signature size and hash
-    mk_text = re.sub(r'KSU_EXPECTED_SIZE := 0x[0-9a-fA-F]+', 'KSU_EXPECTED_SIZE := 0x0363', mk_text)
-    mk_text = re.sub(r'KSU_EXPECTED_HASH := [0-9a-fA-F]+', 'KSU_EXPECTED_HASH := 4359c171f32543394cbc23ef908c4bb94cad7c8087002ba164c8230948c21549', mk_text)
+    import re
+    mk_text = re.sub(r"-DKSU_VERSION=\d+", "-DKSU_VERSION=32653", mk_text)
+    mk_text = re.sub(r"KSU_EXPECTED_SIZE\s*:=\s*0x[0-9a-fA-F]+", "KSU_EXPECTED_SIZE := 0x0108", mk_text)
+    mk_text = re.sub(r"KSU_EXPECTED_HASH\s*:=\s*[0-9a-fA-F]+", "KSU_EXPECTED_HASH := 221f26d25f62de115790cfd269ada83464a22f04e3ef5c091010c1b6e625d5b8", mk_text)
 
     mk_path.write_text(mk_text, encoding="utf-8")
-    print("[+] Updated KernelSU/kernel/Makefile to KSU_VERSION=32653 and matching certificate hash!")
+    print("[+] Patched KernelSU/kernel/Makefile for obj-m, CONFIG_KSU_TAMPER_SYSCALL_TABLE, and KSU 32653 certs!")
 
 # 17. Patch kernel_includes.h and ksu.c for UTS definitions
 ki_path = ksu_root / "kernel/kernel_includes.h"
