@@ -411,7 +411,7 @@ asmlinkage long hook_aarch64_prctl(const struct pt_regs *regs)
 		void __user *arg4 = (void __user *)regs->regs[3];
 		void __user *arg5 = (void __user *)regs->regs[4];
 
-		pr_info("ksu: prctl 0xDEADBEEF cmd=%d from uid=%d\n", cmd, current_uid().val);
+		pr_info("ksu: prctl 0xDEADBEEF cmd=%d from uid=%d\\n", cmd, current_uid().val);
 
 		// Crown caller as manager
 		ksu_set_manager_appid(current_uid().val % 100000);
