@@ -104,6 +104,7 @@ jobs:
           --disable CFI_CLANG \
           --disable SHADOW_CALL_STACK \
           -m KSU \
+          --disable KSU_LSM_SECURITY_HOOKS \
           --disable KSU_HACK_ARM64_BRANCH_LINK \
           -e KSU_TAMPER_SYSCALL_TABLE
 
