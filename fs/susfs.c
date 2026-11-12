@@ -19,6 +19,7 @@
 #include <linux/delay.h>
 #include <linux/workqueue.h>
 #include <linux/compiler.h>
+#include <linux/errno.h>
 #include <linux/fsnotify_backend.h>
 #include <linux/jump_label.h>
 #include <linux/version.h> // We need check kernel version.
@@ -1359,6 +1360,7 @@ out_copy_to_user:
 #define SUSFS_PRIORITY_UID_FILTER_MAX_UID 19999
 #define SUSFS_PRIORITY_UID_FILTER_UID_NUM (SUSFS_PRIORITY_UID_FILTER_MAX_UID - SUSFS_PRIORITY_UID_FILTER_MIN_UID + 1)
 #define SUSFS_PRIORITY_UID_FILTER_BITMAP_LEN BITS_TO_LONGS(SUSFS_PRIORITY_UID_FILTER_UID_NUM)
+#define SUSFS_PACKAGES_LIST_MAX_SIZE (4U * 1024 * 1024)
 
 struct susfs_priority_uid_filter_bitmap {
 	struct rcu_head			rcu;
@@ -1418,25 +1420,16 @@ static bool susfs_is_valid_app_name(const char *app_name) {
 	return true;
 }
 
-/*
- * Resolves the uid of the given app package name from /data/system/packages.list.
- * Returns 0 on success, a negative errno on failure.
- */
-static int susfs_resolve_priority_app_uid(const char *app_name, uid_t *uid) {
+/* Read one snapshot for the entire update, including when the file is renamed. */
+static int susfs_read_priority_packages(char **out_buf, size_t *out_size)
+{
 	struct file *fp;
 	char *buf = NULL;
-	char *line, *tmp, *p;
-	char *pkg_name, *uid_str;
 	loff_t pos = 0;
-	size_t size;
-	unsigned long val;
-	int ret = -ENOENT;
-
-	if (!app_name || !*app_name || !uid)
-		return -EINVAL;
-
-	if (!susfs_is_valid_app_name(app_name))
-		return -EINVAL;
+	loff_t file_size;
+	size_t size, done = 0, i;
+	ssize_t bytes;
+	int ret;
 
 	fp = filp_open("/data/system/packages.list", O_RDONLY | O_NOATIME, 0);
 	if (IS_ERR(fp)) {
@@ -1445,76 +1438,89 @@ static int susfs_resolve_priority_app_uid(const char *app_name, uid_t *uid) {
 		return ret;
 	}
 
-	size = i_size_read(file_inode(fp));
-	if (size <= 0 || size > (4 * 1024 * 1024)) {
-		filp_close(fp, NULL);
-		return -EFBIG;
+	file_size = i_size_read(file_inode(fp));
+	if (file_size <= 0 || file_size > SUSFS_PACKAGES_LIST_MAX_SIZE) {
+		ret = file_size <= 0 ? -EIO : -EFBIG;
+		goto out_close;
 	}
+	size = file_size;
 
 	buf = vmalloc(size + 1);
 	if (!buf) {
-		filp_close(fp, NULL);
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto out_close;
 	}
+	while (done < size) {
+		bytes = kernel_read(fp, buf + done, size - done, &pos);
+		if (bytes <= 0) {
+			ret = bytes < 0 ? bytes : -EIO;
+			goto out_free;
+		}
+		done += bytes;
+	}
+	if (i_size_read(file_inode(fp)) != file_size) {
+		ret = -EAGAIN;
+		goto out_free;
+	}
+	if (memchr(buf, '\0', size)) {
+		ret = -EINVAL;
+		goto out_free;
+	}
+
+	/* Keep the lines reusable for every requested package. */
 	buf[size] = '\0';
-
-	ret = kernel_read(fp, buf, size, &pos);
-	filp_close(fp, NULL);
-	if (ret != (int)size) {
-		vfree(buf);
-		return -EIO;
+	for (i = 0; i < size; i++) {
+		if (buf[i] == '\n')
+			buf[i] = '\0';
 	}
+	*out_buf = buf;
+	*out_size = size;
+	ret = 0;
+	goto out_close;
 
-	line = buf;
-	while (line && *line) {
-		p = strchr(line, '\n');
-		if (p) {
-			*p = '\0';
-			tmp = p + 1;
-		} else {
-			tmp = NULL;
-		}
-
-		/* skip empty lines */
-		if (*line == '\0' || *line == '\r') {
-			line = tmp;
-			continue;
-		}
-
-		/* packages.list format: <package> <uid> <gid> ... */
-		pkg_name = strsep(&line, " \t");
-		if (!pkg_name || *pkg_name == '\0') {
-			line = tmp;
-			continue;
-		}
-
-		uid_str = strsep(&line, " \t");
-		if (!uid_str || *uid_str == '\0') {
-			line = tmp;
-			continue;
-		}
-
-		if (!strcmp(pkg_name, app_name)) {
-			if (kstrtoul(uid_str, 10, &val)) {
-				vfree(buf);
-				return -EINVAL;
-			}
-
-			*uid = (uid_t)val % 100000;
-
-			vfree(buf);
-
-			if (*uid < SUSFS_PRIORITY_UID_FILTER_MIN_UID ||
-			    *uid > SUSFS_PRIORITY_UID_FILTER_MAX_UID)
-				return -EINVAL;
-
-			return 0;
-		}
-
-		line = tmp;
-	}
-
+out_free:
 	vfree(buf);
+out_close:
+	filp_close(fp, NULL);
+	return ret;
+}
+
+/* Only -ENOENT means a package is absent from a successfully read snapshot. */
+static int susfs_resolve_priority_app_uid(const char *app_name,
+					 const char *packages, size_t size,
+					 uid_t *uid)
+{
+	const char *line, *p;
+	char uid_buf[32];
+	size_t name_len = strlen(app_name), len;
+	unsigned long val;
+	int ret;
+
+	for (line = packages; line < packages + size;
+	     line += strlen(line) + 1) {
+		/* packages.list begins each line with <package> <uid>. */
+		len = strcspn(line, " \t");
+		if (len != name_len || memcmp(line, app_name, name_len))
+			continue;
+
+		p = line + len;
+		p += strspn(p, " \t");
+		len = strcspn(p, " \t\r");
+		if (!len || len >= sizeof(uid_buf))
+			return -EINVAL;
+		memcpy(uid_buf, p, len);
+		uid_buf[len] = '\0';
+		ret = kstrtoul(uid_buf, 10, &val);
+		if (ret)
+			return ret;
+		if (val != (uid_t)val)
+			return -ERANGE;
+		*uid = (uid_t)val % 100000;
+		if (*uid < SUSFS_PRIORITY_UID_FILTER_MIN_UID ||
+		    *uid > SUSFS_PRIORITY_UID_FILTER_MAX_UID)
+			return -ERANGE;
+		return 0;
+	}
 	return -ENOENT;
 }
 
@@ -1524,15 +1530,21 @@ static int susfs_resolve_priority_app_uid(const char *app_name, uid_t *uid) {
  *
  * The spaces before and after the commas are ignored.
  * The given string is modified while it is being parsed.
- * If 'skip_failed' is true, the apps whose data path cannot be found are
- * skipped (they are uninstalled already), otherwise an error is returned.
+ * If 'skip_missing' is true, packages absent from the snapshot are skipped.
+ * Read, allocation and malformed UID errors must preserve the old bitmap.
  * Returns 0 on success, a negative errno on failure.
  */
-static int susfs_parse_priority_app_names(char *app_str, unsigned long *bits, bool skip_failed) {
+static int susfs_parse_priority_app_names(char *app_str, unsigned long *bits, bool skip_missing) {
 	char *token = NULL;
 	char *saveptr = app_str;
+	char *packages;
+	size_t packages_size;
 	uid_t uid = 0;
 	int ret;
+
+	ret = susfs_read_priority_packages(&packages, &packages_size);
+	if (ret)
+		return ret;
 
 	while ((token = strsep(&saveptr, ",")) != NULL) {
 		token = strim(token);
@@ -1543,30 +1555,25 @@ static int susfs_parse_priority_app_names(char *app_str, unsigned long *bits, bo
 
 		if (!susfs_is_valid_app_name(token)) {
 			SUSFS_LOGE("invalid app name '%s'\n", token);
-			return -EINVAL;
+			ret = -EINVAL;
+			goto out;
 		}
 
-		ret = susfs_resolve_priority_app_uid(token, &uid);
-		if (ret) {
-			if (skip_failed)
-				continue;
-			return ret;
-		}
-
-		if (uid < SUSFS_PRIORITY_UID_FILTER_MIN_UID || uid > SUSFS_PRIORITY_UID_FILTER_MAX_UID) {
-			SUSFS_LOGE("the uid %u of the app '%s' is out of the allowed range [%d, %d]\n",
-					uid, token, SUSFS_PRIORITY_UID_FILTER_MIN_UID,
-					SUSFS_PRIORITY_UID_FILTER_MAX_UID);
-			if (!skip_failed)
-				return -EINVAL;
+		ret = susfs_resolve_priority_app_uid(token, packages, packages_size, &uid);
+		if (ret == -ENOENT && skip_missing) {
+			ret = 0;
 			continue;
 		}
+		if (ret)
+			goto out;
 
 		set_bit(uid - SUSFS_PRIORITY_UID_FILTER_MIN_UID, bits);
 		SUSFS_LOGI("app_name '%s', uid '%u' is now added to priority_uid_filter_bitmap\n", token, uid);
 	}
 
-	return 0;
+out:
+	vfree(packages);
+	return ret;
 }
 
 void susfs_set_priority_uid_filter(void __user **user_info) {
@@ -1717,8 +1724,10 @@ static void susfs_priority_app_strings_worker(struct work_struct *work) {
 
 	/* the apps that are uninstalled already are skipped */
 	ret = susfs_parse_priority_app_names(app_strings, new_bitmap->bits, true);
-	if (ret)
+	if (ret) {
+		SUSFS_LOGE("priority UID refresh failed: %d; keeping the previous filter\n", ret);
 		goto out_unlock;
+	}
 
 	old_bitmap = rcu_dereference_protected(priority_uid_filter_bitmap, lockdep_is_held(&susfs_mutex_lock_priority_uid_filter));
 	rcu_assign_pointer(priority_uid_filter_bitmap, new_bitmap);
@@ -1948,19 +1957,22 @@ static int add_mark_on_inode(struct inode *inode, u32 mask,
 								struct fsnotify_mark **out);
 
 static unsigned long sdcard_cleanup_scheduled;
+static unsigned long sdcard_monitor_started;
+static DEFINE_MUTEX(susfs_sdcard_watch_lock);
 static struct delayed_work sdcard_cleanup_dwork;
 
-static void susfs_sdcard_cleanup_fn(struct work_struct *work)
+/* Caller holds susfs_sdcard_watch_lock and is outside fsnotify's SRCU section. */
+static void susfs_release_sdcard_watch(void)
 {
 	struct fsnotify_group *grp;
+	struct fsnotify_mark *mark;
 	struct inode *inode;
 
-	if (static_key_enabled(&susfs_is_sdcard_android_data_not_decrypted))
-		static_branch_disable(&susfs_is_sdcard_android_data_not_decrypted);
-	SUSFS_LOGI("/sdcard is decrypted\n");
-	SUSFS_LOGI("cleaning up fsnotify sdcard watch\n");
-
 	grp = xchg(&g, NULL);
+	mark = xchg(&g_watch.mark, NULL);
+	/* Drop the creator's reference; an attached mark is still held by grp. */
+	if (mark)
+		fsnotify_put_mark(mark);
 	if (grp)
 		fsnotify_destroy_group(grp);
 
@@ -1974,17 +1986,31 @@ static void susfs_sdcard_cleanup_fn(struct work_struct *work)
 	}
 }
 
+static void susfs_sdcard_cleanup_fn(struct work_struct *work)
+{
+	mutex_lock(&susfs_sdcard_watch_lock);
+	if (static_key_enabled(&susfs_is_sdcard_android_data_not_decrypted))
+		static_branch_disable(&susfs_is_sdcard_android_data_not_decrypted);
+	SUSFS_LOGI("/sdcard is decrypted\n");
+	SUSFS_LOGI("cleaning up fsnotify sdcard watch\n");
+	susfs_release_sdcard_watch();
+	mutex_unlock(&susfs_sdcard_watch_lock);
+}
+
+/* The caller releases both complete and partially initialized watches. */
 static int watch_one_dir(struct watch_dir *wd)
 {
-	int ret = kern_path(wd->path, LOOKUP_FOLLOW, &wd->kpath);
+	struct path path;
+	int ret = kern_path(wd->path, LOOKUP_FOLLOW, &path);
+
 	if (ret) {
 		SUSFS_LOGI("path not ready: %s (%d)\n", wd->path, ret);
 		return ret;
 	}
+	wd->kpath = path;
 	wd->inode = d_backing_inode(wd->kpath.dentry);
 	if (!wd->inode) {
 		SUSFS_LOGE("wd->inode is NULL\n");
-		path_put(&wd->kpath);
 		return -ENOENT;
 	}
 	ihold(wd->inode);
@@ -1992,9 +2018,6 @@ static int watch_one_dir(struct watch_dir *wd)
 	ret = add_mark_on_inode(wd->inode, wd->mask, &wd->mark);
 	if (ret) {
 		SUSFS_LOGE("add mark failed for %s (%d)\n", wd->path, ret);
-		iput(wd->inode);
-		wd->inode = NULL;
-		path_put(&wd->kpath);
 		return ret;
 	}
 	SUSFS_LOGI("watching %s\n", wd->path);
@@ -2022,20 +2045,21 @@ static SUSFS_DECL_FSNOTIFY_OPS(susfs_handle_sdcard_inode_event)
 	return 0;
 }
 
+static void m_free(struct fsnotify_mark *m)
+{
+	kfree(m);
+}
+
 static const struct fsnotify_ops fsnotify_ops = {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
 	.handle_inode_event = susfs_handle_sdcard_inode_event,
 #else
 	.handle_event = susfs_handle_sdcard_inode_event,
 #endif
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 12, 0)
+	.free_mark = m_free,
+#endif
 };
-
-static void __maybe_unused m_free(struct fsnotify_mark *m)
-{
-	if (m) {
-		kfree(m);
-	}
-}
 
 static int add_mark_on_inode(struct inode *inode, u32 mask,
 								struct fsnotify_mark **out)
@@ -2064,7 +2088,7 @@ static int add_mark_on_inode(struct inode *inode, u32 mask,
 
 	if (ret) {
 		fsnotify_put_mark(m);
-		return -EINVAL;
+		return ret;
 	}
 	*out = m;
 	return 0;
@@ -2073,11 +2097,13 @@ static int add_mark_on_inode(struct inode *inode, u32 mask,
 static int susfs_sdcard_monitor_fn(void *data)
 {
 	struct cred *cred = prepare_creds();
+	struct fsnotify_group *grp;
 	int ret = 0;
 
 	if (!cred) {
 		SUSFS_LOGE("failed to prepare creds!\n");
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto out_unavailable;
 	}
 
 	setup_selinux("u:r:ksu:s0", cred);
@@ -2085,31 +2111,46 @@ static int susfs_sdcard_monitor_fn(void *data)
 
 	if (!susfs_is_current_ksu_domain()) {
 		SUSFS_LOGE("domain is not ksu, exiting the thread\n");
-		return -EINVAL;
+		ret = -EINVAL;
+		goto out_unavailable;
 	}
 
 	SUSFS_LOGI("start monitoring path '%s' using fsnotify\n",
 				SDCARD_ANDROID_PATH);
 
 	INIT_DELAYED_WORK(&sdcard_cleanup_dwork, susfs_sdcard_cleanup_fn);
+	/* An event can arrive as soon as its mark is attached. */
+	mutex_lock(&susfs_sdcard_watch_lock);
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 0, 0)
-	g = fsnotify_alloc_group(&fsnotify_ops, 0);
+	grp = fsnotify_alloc_group(&fsnotify_ops, 0);
 #else
-	g = fsnotify_alloc_group(&fsnotify_ops);
+	grp = fsnotify_alloc_group(&fsnotify_ops);
 #endif
-	if (IS_ERR(g)) {
-		return PTR_ERR(g);
+	if (IS_ERR(grp)) {
+		ret = PTR_ERR(grp);
+		goto out_unlock;
 	}
+	g = grp;
 
 	ret = watch_one_dir(&g_watch);
-
-	SUSFS_LOGI("ret: %d\n", ret);
-
-	return 0;
+	if (ret)
+		susfs_release_sdcard_watch();
+out_unlock:
+	mutex_unlock(&susfs_sdcard_watch_lock);
+	if (!ret)
+		return 0;
+out_unavailable:
+	SUSFS_LOGE("sdcard monitor unavailable: %d; disabling the decrypt guard\n", ret);
+	if (static_key_enabled(&susfs_is_sdcard_android_data_not_decrypted))
+		static_branch_disable(&susfs_is_sdcard_android_data_not_decrypted);
+	return ret;
 }
 
 void susfs_start_sdcard_monitor_fn(void) {
+	/* Do not reinitialize work or overwrite the state of a live watch. */
+	if (test_and_set_bit(0, &sdcard_monitor_started))
+		return;
 	if (IS_ERR(kthread_run(susfs_sdcard_monitor_fn, NULL, "susfs_sdcard_monitor"))) {
 		SUSFS_LOGE("failed to create thread susfs_sdcard_monitor\n");
 		SUSFS_LOGI("/sdcard is forcibly set decrypted\n");
@@ -2135,7 +2176,7 @@ static void susfs_run_extra_works(struct work_struct *work) {
  */
 int __weak ksu_setup_preinit_file(struct filename **filename_ptr, void *argv_user)
 {
-	return 0;
+	return -EOPNOTSUPP;
 }
 
 int __weak ksu_preinit_handle_post_execveat(int *fd, struct filename **filename_ptr,

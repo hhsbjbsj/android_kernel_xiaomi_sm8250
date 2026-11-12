@@ -247,7 +247,10 @@ if [ "$ENABLE_KSU" -eq 1 ]; then
     echo "==========================================="
     echo " [*] Initializing KernelSU  Setup"
     echo "==========================================="
-    BAKASU_PATCH="$KERNEL_DIR/scripts/bakasu-susfs-2.4.patch"
+    BAKASU_PATCHES=(
+        "$KERNEL_DIR/scripts/bakasu-susfs-2.4.patch"
+        "$KERNEL_DIR/scripts/bakasu-preinit-4.19.patch"
+    )
     if [ "$(git -C KernelSU rev-parse HEAD 2>/dev/null || true)" != "$BAKASU_REVISION" ] ||
         [ ! -f drivers/kernelsu/Kconfig ] ||
         ! grep -Fq 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig ||
@@ -260,14 +263,16 @@ if [ "$ENABLE_KSU" -eq 1 ]; then
         echo "[!] BakaSU checkout does not match $BAKASU_REVISION." >&2
         exit 1
     fi
-    if ! git -C KernelSU apply --reverse --check "$BAKASU_PATCH" >/dev/null 2>&1; then
-        echo "[*] Applying bakasu-susfs-2.4.patch..."
-        if ! git -C KernelSU apply --whitespace=nowarn "$BAKASU_PATCH"; then
-            echo "[!] Failed to apply $BAKASU_PATCH" >&2
-            git -C KernelSU apply --check --verbose "$BAKASU_PATCH" || true
-            exit 1
+    for BAKASU_PATCH in "${BAKASU_PATCHES[@]}"; do
+        if ! git -C KernelSU apply --reverse --check "$BAKASU_PATCH" >/dev/null 2>&1; then
+            echo "[*] Applying $(basename "$BAKASU_PATCH")..."
+            if ! git -C KernelSU apply --whitespace=nowarn "$BAKASU_PATCH"; then
+                echo "[!] Failed to apply $BAKASU_PATCH" >&2
+                git -C KernelSU apply --check --verbose "$BAKASU_PATCH" || true
+                exit 1
+            fi
         fi
-    fi
+    done
     echo "[+] BakaSU and SUSFS 2.4 integration ready."
 fi
 
@@ -297,15 +302,18 @@ echo "[*] Cloning AnyKernel3..."
 # AstideLabs/AnyKernel3 (branch kona), the original source, has been deleted
 # and now returns 404, which made git ask for credentials and aborted the
 # build.  KirinNova/AnyKernel3- is our own fork of osm0sis/AnyKernel3 whose
-# anykernel.sh is configured for Xiaomi SM8250: BLOCK=boot, no device check,
-# and it picks kernels/<os>/ written by the packaging step below.
-# Override with ANYKERNEL3_REPO / ANYKERNEL3_BRANCH if needed.
+# anykernel.sh uses BLOCK=boot and picks kernels/<os>/ written below.
+# Pin the reviewed installer and enable its device guard before packaging.
+# Custom forks can override ANYKERNEL3_REPO / ANYKERNEL3_REVISION explicitly.
 AK3_REPO=${ANYKERNEL3_REPO:-https://github.com/KirinNova/AnyKernel3-}
-AK3_BRANCH=${ANYKERNEL3_BRANCH:-master}
-git clone "$AK3_REPO" -b "$AK3_BRANCH" --single-branch --depth=1 anykernel
+AK3_REVISION=${ANYKERNEL3_REVISION:-7d2b2bd8aab07e6693c6ec3ee2bdef0d6db99cf4}
+git init -q anykernel
+git -C anykernel remote add origin "$AK3_REPO"
+git -C anykernel fetch --depth=1 origin "$AK3_REVISION"
+git -C anykernel checkout --detach FETCH_HEAD
 echo "[+] AnyKernel3 cloned successfully."
 echo "[*] Adjusting AnyKernel3..."
-sed -i "s/^device\.name1=.*/device.name1=${DEVICE_NAME}/" anykernel/anykernel.sh
+python3 scripts/configure_anykernel.py "$DEVICE_NAME" anykernel/anykernel.sh
 echo "[*] AnyKernel3 adjusted successfully."
 echo "==========================================="
 

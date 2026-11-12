@@ -85,12 +85,31 @@ jobs:
           echo "Executing command: ./build_kernel.sh $ARGS"
           ./build_kernel.sh $ARGS
 
+      - name: Collect Build Diagnostics
+        if: always()
+        run: |
+          mkdir -p build-diagnostics
+          if [ -f scripts/collect-build-diagnostics.py ]; then
+            python3 scripts/collect-build-diagnostics.py
+          else
+            printf '%s\n' 'Source checkout unavailable; no build diagnostics could be collected.' > build-diagnostics/checkout-error.txt
+          fi
+
+      - name: Upload Build Diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: KernelDiagnostics-${{ matrix.device }}-${{ matrix.ksu && 'KSU' || 'NoKSU' }}-${{ github.run_id }}
+          path: build-diagnostics/
+          if-no-files-found: error
+
       - name: Upload Kernel Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: APTKernel-${{ matrix.device }}-${{ matrix.ksu && 'KSU' || 'NoKSU' }}-${{ github.run_id }}
-          path: APTKernel_*.zip
+          path: "*.zip"
           compression-level: 0 # 内核刷机包本身已是 zip 格式，无需二次压缩
+          if-no-files-found: error
 
   release:
     name: Publish GitHub Release
@@ -117,22 +136,20 @@ jobs:
           pattern: APTKernel-*-${{ github.run_id }}
           merge-multiple: true
 
+      - name: Download Build Diagnostics
+        uses: actions/download-artifact@v4
+        with:
+          path: all_diagnostics
+          pattern: KernelDiagnostics-*-${{ github.run_id }}
+
+      - name: Generate Release Description
+        run: python3 scripts/collect-build-diagnostics.py --release-from all_diagnostics --output release-info
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.vars.outputs.TAG_NAME }}
+          target_commitish: ${{ github.sha }}
           name: "APTKernel Build - ${{ steps.vars.outputs.BUILD_DATE }} (${{ steps.vars.outputs.SHA_SHORT }})"
-          body: |
-            ## 自动构建内核发布 / Automated Kernel Release
-            
-            - **构建日期 / Build Date:** ${{ steps.vars.outputs.BUILD_DATE }}
-            - **提交哈希 / Commit SHA:** `${{ steps.vars.outputs.SHA_SHORT }}`
-            - **支持设备 / Supported Devices:** `alioth, apollo, cas, cmi, dagu, elish, enuma, lmi, munch, pipa, psyche, thyme, umi`
-            
-            ---
-            ### 刷机包分类指南 / Flashable ZIP Instructions:
-            - **MIUI**: 适用于原厂 MIUI / HyperOS 或基于 MIUI 修改的第三方 ROM。
-            - **AOSP**: 适用于 LineageOS 等类原生 AOSP ROM。
-            - **ReSukiSU-SuSFS**: 集成 ReSukiSU 与 SuSFS。
-            - **NoKernelSU**: 原版纯净内核，支持自行使用 Magisk 或 APatch 刷入。
+          body_path: release-info/release-body.md
           files: all_kernels/*.zip

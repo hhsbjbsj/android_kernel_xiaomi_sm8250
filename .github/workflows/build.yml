@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - HyperSU
+      - Bakasu
   workflow_dispatch:
     inputs:
       device:
@@ -15,7 +16,7 @@ on:
           - alioth
           - lmi
       ksu:
-        description: 'Enable KernelSU (HyperSU)'
+        description: 'Enable KernelSU (BakaSU)'
         required: true
         type: boolean
         default: true
@@ -180,12 +181,31 @@ jobs:
           echo "=== Post-Build Ccache Stats ==="
           ccache -s
 
+      - name: Collect Build Diagnostics
+        if: always()
+        run: |
+          mkdir -p build-diagnostics
+          if [ -f scripts/collect-build-diagnostics.py ]; then
+            python3 scripts/collect-build-diagnostics.py
+          else
+            printf '%s\n' 'Source checkout unavailable; no build diagnostics could be collected.' > build-diagnostics/checkout-error.txt
+          fi
+
+      - name: Upload Build Diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: KernelDiagnostics-${{ github.event.inputs.device || 'alioth' }}-${{ github.event.inputs.target_os || 'miui' }}-${{ github.run_id }}
+          path: build-diagnostics/
+          if-no-files-found: error
+
       - name: Upload Flashable ZIP & Modules (Artifact)
         uses: actions/upload-artifact@v4
         with:
           name: DEBUG_APTKernel-${{ github.event.inputs.device || 'alioth' }}-${{ github.event.inputs.target_os || 'miui' }}-${{ github.run_id }}
           path: "*.zip"
           compression-level: 0
+          if-no-files-found: error
 
       - name: Publish Release
         if: ${{ github.event_name == 'schedule' || github.event_name == 'push' || github.event.inputs.release != 'false' }}
@@ -193,11 +213,8 @@ jobs:
         with:
           files: "*.zip"
           tag_name: kernel-${{ github.event.inputs.device || 'alioth' }}-${{ github.run_id }}
+          target_commitish: ${{ github.sha }}
           name: "Kernel Build for ${{ github.event.inputs.device || 'alioth' }} (${{ github.event.inputs.target_os || 'miui' }})"
-          body: |
-            Automatic kernel build.
-            - **Device:** ${{ github.event.inputs.device || 'alioth' }}
-            - **KernelSU:** ${{ github.event.inputs.ksu || 'true' }}
-            - **Target OS:** ${{ github.event.inputs.target_os || 'miui' }}
+          body_path: build-diagnostics/release-body.md
           draft: false
           prerelease: false
